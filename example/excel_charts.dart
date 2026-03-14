@@ -1,5 +1,5 @@
 import 'dart:io';
-import 'package:excel_community/excel.dart';
+import 'package:excel_community/excel_community.dart';
 
 /// Example demonstrating how to create charts in Excel files
 void main() {

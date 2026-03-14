@@ -92,10 +92,10 @@ class SharedString {
 
     /// SharedStringItem
     /// https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.spreadsheet.sharedstringitem?view=openxml-3.0.1
-    assert(node.localName == 'si'); //18.4.8 si (String Item)
+    assert(node.name.local == 'si'); //18.4.8 si (String Item)
 
-    for (final child in node.childElements) {
-      switch (child.localName) {
+    for (final child in node.children.whereType<XmlElement>()) {
+      switch (child.name.local) {
         /// Text
         /// https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.spreadsheet.text?view=openxml-3.0.1
         case 't': //18.4.12 t (Text)
@@ -106,13 +106,13 @@ class SharedString {
         /// https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.spreadsheet.run?view=openxml-3.0.1
         case 'r': //18.4.4 r (Rich Text Run)
           var style = CellStyle();
-          for (final runChild in child.childElements) {
-            switch (runChild.localName) {
+          for (final runChild in child.children.whereType<XmlElement>()) {
+            switch (runChild.name.local) {
               /// RunProperties
               /// https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.spreadsheet.runproperties?view=openxml-3.0.1
               case 'rPr':
-                for (final runProperty in runChild.childElements) {
-                  switch (runProperty.localName) {
+                for (final runProperty in runChild.children.whereType<XmlElement>()) {
+                  switch (runProperty.name.local) {
                     case 'b': //18.8.2 b (Bold)
                       style = style.copyWith(boldVal: getBool(runProperty));
                       break;
