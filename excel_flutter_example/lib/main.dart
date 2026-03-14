@@ -37,10 +37,103 @@ class _MyHomePageState extends State<MyHomePage> {
   String _status = 'Press a button to generate an Excel with a chart.';
   bool _isGenerating = false;
 
+  Future<void> _generateSimpleExcel() async {
+    setState(() {
+      _isGenerating = true;
+      _status = 'Generating simple Excel (NO chart)...';
+    });
+
+    try {
+      var excel = Excel.createExcel();
+      var sheet = excel['Sheet1'];
+
+      // Add simple data
+      sheet.updateCell(CellIndex.indexByString("A1"), TextCellValue("Name"));
+      sheet.updateCell(CellIndex.indexByString("B1"), TextCellValue("Age"));
+      sheet.updateCell(CellIndex.indexByString("A2"), TextCellValue("Alice"));
+      sheet.updateCell(CellIndex.indexByString("B2"), IntCellValue(30));
+      sheet.updateCell(CellIndex.indexByString("A3"), TextCellValue("Bob"));
+      sheet.updateCell(CellIndex.indexByString("B3"), IntCellValue(25));
+
+      if (kIsWeb) {
+        if (kDebugMode) {
+          print('Generating simple Excel for Web...');
+        }
+        
+        final bytes = excel.save(fileName: 'simple_no_chart.xlsx');
+        
+        if (bytes != null && bytes.isNotEmpty) {
+          setState(() {
+            _status = '✅ Simple Excel generated successfully!\n'
+                'File size: ${(bytes.length / 1024).toStringAsFixed(2)} KB\n'
+                'The download should start automatically.\n'
+                '\n📥 Check your Downloads folder\n'
+                '📌 File: simple_no_chart.xlsx';
+          });
+          
+          if (kDebugMode) {
+            print('✅ Simple Excel saved for web: ${bytes.length} bytes');
+          }
+        } else {
+          setState(() {
+            _status = '❌ Error: Failed to generate Excel file.\n'
+                'The file is empty or could not be encoded.';
+          });
+        }
+      } else {
+        var bytes = excel.encode();
+        
+        if (bytes == null) {
+          setState(() {
+            _status = 'Error: Failed to encode Excel file.';
+          });
+          return;
+        }
+        
+        String? outputFile = await FilePicker.platform.saveFile(
+          dialogTitle: 'Save Simple Excel File',
+          fileName: 'simple_no_chart.xlsx',
+          type: FileType.custom,
+          allowedExtensions: ['xlsx'],
+        );
+
+        if (outputFile != null) {
+          final file = File(outputFile);
+          await file.writeAsBytes(bytes);
+          
+          final savedFileSize = await file.length();
+          
+          setState(() {
+            _status = '✅ Simple Excel saved successfully!\n'
+                'Location: $outputFile\n'
+                'Size: ${(savedFileSize / 1024).toStringAsFixed(2)} KB\n'
+                '\n📌 Open with Excel to verify it works';
+          });
+        } else {
+          setState(() {
+            _status = 'Save cancelled.';
+          });
+        }
+      }
+    } catch (e, stackTrace) {
+      setState(() {
+        _status = 'Error: $e';
+      });
+      if (kDebugMode) {
+        print('Error: $e');
+        print('Stack trace: $stackTrace');
+      }
+    } finally {
+      setState(() {
+        _isGenerating = false;
+      });
+    }
+  }
+
   Future<void> _generateExcelWithChart(ChartType type) async {
     setState(() {
       _isGenerating = true;
-      _status = 'Generating Excel...';
+      _status = 'Generating Excel with chart...';
     });
 
     try {
@@ -72,48 +165,115 @@ class _MyHomePageState extends State<MyHomePage> {
       final series = [
         ChartSeries(
           name: "Series 1",
-          categoriesRange: "Sheet1!\$A\$2:\$A\$7",
-          valuesRange: "Sheet1!\$B\$2:\$B\$7",
+          categoriesRange: r"Sheet1!$A$2:$A$7",
+          valuesRange: r"Sheet1!$B$2:$B$7",
         ),
         ChartSeries(
           name: "Series 2",
-          categoriesRange: "Sheet1!\$A\$2:\$A\$7",
-          valuesRange: "Sheet1!\$C\$2:\$C\$7",
+          categoriesRange: r"Sheet1!$A$2:$A$7",
+          valuesRange: r"Sheet1!$C$2:$C$7",
         ),
       ];
 
       final anchor = ChartAnchor.at(column: 5, row: 1, width: 10, height: 15);
 
-      if (type == ChartType.column) {
-        chart = ColumnChart(
-          title: "Monthly Data (Column)",
-          series: series,
-          anchor: anchor,
-        );
-      } else if (type == ChartType.line) {
-        chart = LineChart(
-          title: "Monthly Data (Line)",
-          series: series,
-          anchor: anchor,
-        );
-      } else {
-        chart = PieChart(
-          title: "Pie Chart Example",
-          series: [series[0]], // Pie chart usually only takes one series
-          anchor: anchor,
-        );
+      switch (type) {
+        case ChartType.column:
+          chart = ColumnChart(
+            title: "Monthly Data (Column)",
+            series: series,
+            anchor: anchor,
+          );
+        case ChartType.bar:
+          chart = BarChart(
+            title: "Monthly Data (Bar)",
+            series: series,
+            anchor: anchor,
+          );
+        case ChartType.line:
+          chart = LineChart(
+            title: "Monthly Data (Line)",
+            series: series,
+            anchor: anchor,
+          );
+        case ChartType.area:
+          chart = AreaChart(
+            title: "Monthly Data (Area)",
+            series: series,
+            anchor: anchor,
+          );
+        case ChartType.pie:
+          chart = PieChart(
+            title: "Pie Chart Example",
+            series: [series[0]], // Pie chart usually only takes one series
+            anchor: anchor,
+          );
+        case ChartType.doughnut:
+          chart = DoughnutChart(
+            title: "Doughnut Chart Example",
+            series: [series[0]], // Doughnut chart usually only takes one series
+            anchor: anchor,
+          );
+        case ChartType.radar:
+          chart = RadarChart(
+            title: "Radar Chart Example",
+            series: series,
+            anchor: anchor,
+            filled: true,
+          );
+        case ChartType.scatter:
+          chart = ScatterChart(
+            title: "Scatter Chart Example",
+            series: series,
+            anchor: anchor,
+          );
       }
 
       sheet.addChart(chart);
-
-      var bytes = excel.save();
+      
+      if (kDebugMode) {
+        print('Chart added to sheet');
+      }
 
       if (kIsWeb) {
-        // Handle web saving if needed, for now just status
-        setState(() {
-          _status = 'Excel generated (Web saving not implemented in this example).';
-        });
+        if (kDebugMode) {
+          print('Generating Excel for Web...');
+        }
+        
+        final bytes = excel.save(fileName: 'chart_example.xlsx');
+        
+        if (bytes != null && bytes.isNotEmpty) {
+          setState(() {
+            _status = '✅ Excel generated successfully!\n'
+                'File size: ${(bytes.length / 1024).toStringAsFixed(2)} KB\n'
+                'The download should start automatically.\n'
+                '\n📥 Check your Downloads folder\n'
+                '📌 File: chart_example.xlsx';
+          });
+          
+          if (kDebugMode) {
+            print('✅ Excel saved for web: ${bytes.length} bytes');
+          }
+        } else {
+          setState(() {
+            _status = '❌ Error: Failed to generate Excel file for web.\n'
+                'The file is empty or could not be encoded.';
+          });
+          
+          if (kDebugMode) {
+            print('❌ Error: excel.save() returned null or empty');
+          }
+        }
       } else {
+        var bytes = excel.encode();
+        
+        if (bytes == null) {
+          setState(() {
+            _status = 'Error: Failed to encode Excel file.';
+          });
+          return;
+        }
+        
         String? outputFile = await FilePicker.platform.saveFile(
           dialogTitle: 'Save Excel File',
           fileName: 'chart_example.xlsx',
@@ -123,22 +283,37 @@ class _MyHomePageState extends State<MyHomePage> {
 
         if (outputFile != null) {
           final file = File(outputFile);
-          await file.writeAsBytes(bytes!);
+        
+          await file.writeAsBytes(bytes);
+          
+          // Verify the file was written correctly
+          final savedFileSize = await file.length();
+          
           setState(() {
-            _status = 'Excel saved to: $outputFile';
+            _status = '✅ Excel saved successfully!\n'
+                'Location: $outputFile\n'
+                'Size: ${(savedFileSize / 1024).toStringAsFixed(2)} KB\n'
+                '\n📌 IMPORTANT: Open with Excel, not a text editor!';
           });
+          
+          if (kDebugMode) {
+            print('✅ File saved: $outputFile');
+            print('📊 Bytes generated: ${bytes.length}');
+            print('💾 File size: $savedFileSize bytes');
+          }
         } else {
           setState(() {
             _status = 'Save cancelled.';
           });
         }
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
       setState(() {
         _status = 'Error: $e';
       });
       if (kDebugMode) {
-        print(e);
+        print('Error generating Excel with chart: $e');
+        print('Stack trace: $stackTrace');
       }
     } finally {
       setState(() {
@@ -177,6 +352,20 @@ class _MyHomePageState extends State<MyHomePage> {
                 const CircularProgressIndicator()
               else ...[
                 ElevatedButton.icon(
+                  onPressed: _generateSimpleExcel,
+                  icon: const Icon(Icons.table_view),
+                  label: const Text('Test: Simple Excel (No Chart)'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green.shade100,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Excel with Charts:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
                   onPressed: () => _generateExcelWithChart(ChartType.column),
                   icon: const Icon(Icons.bar_chart),
                   label: const Text('Generate Column Chart'),
@@ -193,6 +382,36 @@ class _MyHomePageState extends State<MyHomePage> {
                   icon: const Icon(Icons.pie_chart),
                   label: const Text('Generate Pie Chart'),
                 ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: () => _generateExcelWithChart(ChartType.area),
+                  icon: const Icon(Icons.area_chart),
+                  label: const Text('Generate Area Chart'),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: () => _generateExcelWithChart(ChartType.doughnut),
+                  icon: const Icon(Icons.donut_small),
+                  label: const Text('Generate Doughnut Chart'),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: () => _generateExcelWithChart(ChartType.radar),
+                  icon: const Icon(Icons.radar),
+                  label: const Text('Generate Radar Chart'),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: () => _generateExcelWithChart(ChartType.bar),
+                  icon: const Icon(Icons.horizontal_split),
+                  label: const Text('Generate Bar Chart'),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: () => _generateExcelWithChart(ChartType.scatter),
+                  icon: const Icon(Icons.scatter_plot),
+                  label: const Text('Generate Scatter Chart'),
+                ),
               ],
             ],
           ),
@@ -202,4 +421,4 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 }
 
-enum ChartType { column, line, pie }
+enum ChartType { column, line, pie, area, doughnut, radar, bar, scatter }

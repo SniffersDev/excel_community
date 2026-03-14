@@ -516,7 +516,10 @@ class Excel {
           _sheetMap.containsKey('Sheet1') &&
           !_isRenamingDefaultSheet) {
         Sheet s = _sheetMap['Sheet1']!;
-        if (s._sheetData.isEmpty && s._spanList.isEmpty && sheet != 'Sheet1') {
+        if (s._sheetData.isEmpty &&
+            s._spanList.isEmpty &&
+            s.charts.isEmpty &&
+            sheet != 'Sheet1') {
           _isRenamingDefaultSheet = true;
           try {
             rename('Sheet1', sheet);

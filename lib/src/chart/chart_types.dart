@@ -54,3 +54,59 @@ class ScatterChart extends Chart {
   @override
   String get chartTagName => 'scatterChart';
 }
+
+/// Represents an Excel Area Chart.
+class AreaChart extends Chart {
+  AreaChart({
+    required super.title,
+    required super.series,
+    required super.anchor,
+    super.showLegend,
+  });
+
+  @override
+  String get chartTagName => 'areaChart';
+}
+
+/// Represents an Excel Doughnut Chart (Pie chart with a hole).
+class DoughnutChart extends Chart {
+  DoughnutChart({
+    required super.title,
+    required super.series,
+    required super.anchor,
+    super.showLegend,
+  });
+
+  @override
+  String get chartTagName => 'doughnutChart';
+}
+
+/// Represents an Excel Radar Chart.
+class RadarChart extends Chart {
+  final bool filled;
+
+  RadarChart({
+    required super.title,
+    required super.series,
+    required super.anchor,
+    super.showLegend,
+    this.filled = false,
+  });
+
+  @override
+  String get chartTagName => 'radarChart';
+}
+
+/// Represents an Excel Bar Chart (Horizontal bars).
+/// Note: For vertical bars, use ColumnChart with isVertical=true.
+class BarChart extends Chart {
+  BarChart({
+    required super.title,
+    required super.series,
+    required super.anchor,
+    super.showLegend,
+  });
+
+  @override
+  String get chartTagName => 'barChart';
+}

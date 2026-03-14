@@ -10,20 +10,37 @@ class SavingHelper {
       return null;
     }
 
-    final blob = Blob(JSArray.from(Uint8List.fromList(val).toJS));
-    final url = URL.createObjectURL(blob);
-    final anchor = HTMLAnchorElement()
-      ..href = url
-      ..download = '$fileName';
+    try {
+      // Convert List<int> to Uint8List
+      final bytes = Uint8List.fromList(val);
+      
+      // Create blob with proper MIME type for Excel files
+      final blob = Blob(
+        [bytes.toJS].toJS,
+        BlobPropertyBag(
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ),
+      );
+      
+      final url = URL.createObjectURL(blob);
+      final anchor = HTMLAnchorElement()
+        ..href = url
+        ..download = fileName;
 
-    document.body?.append(anchor);
+      document.body?.append(anchor);
 
-    // download the file
-    anchor.click();
+      // Trigger download
+      anchor.click();
 
-    // cleanup
-    anchor.remove();
-    URL.revokeObjectURL(url);
-    return val;
+      // Cleanup
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      
+      return val;
+    } catch (e) {
+      // In case of error, print to console and return null
+      print('Error saving Excel file in browser: $e');
+      return null;
+    }
   }
 }

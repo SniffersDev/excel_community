@@ -26,5 +26,13 @@ Archive _cloneArchive(
       clone.addFile(copy);
     }
   });
+
+  // Add files that were not in the original archive
+  _archiveFiles.forEach((fileName, file) {
+    if (clone.findFile(fileName) == null) {
+      clone.addFile(file);
+    }
+  });
+
   return clone;
 }
