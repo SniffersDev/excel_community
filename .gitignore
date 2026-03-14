@@ -76,3 +76,13 @@ build/
 !**/ios/**/default.pbxuser
 !**/ios/**/default.perspectivev3
 !/packages/flutter_tools/test/data/dart_dependencies_test/**/.packages
+
+# Generated test files
+*.xlsx
+test_*.dart
+**/test_*.dart
+generar_*.dart
+prueba_*.dart
+TEST_*.xlsx
+PRUEBA_*.xlsx
+excel_flutter_example/windows/flutter/generated_plugins.cmake

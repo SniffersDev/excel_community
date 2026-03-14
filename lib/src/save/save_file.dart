@@ -1051,11 +1051,11 @@ class Save {
       _excel._xmlFiles[drawingRelsPath] = drawingRelsBuilder.buildDocument();
 
       // 2. Generate Drawing XML (linking to rId1, rId2... in drawingRels)
-      _excel._xmlFiles[drawingPath] = writer.generateDrawingXml(sheet.charts.first, drawingCount);
+      _excel._xmlFiles[drawingPath] = writer.generateDrawingXml(sheet.charts, drawingCount);
 
       // Add Content Type for Drawing
       _addContentType(
-        'application/vnd.openxmlformats-officedocument.drawingml.chartshapes+xml',
+        'application/vnd.openxmlformats-officedocument.drawing+xml',
         '/$drawingPath',
       );
 
@@ -1072,20 +1072,53 @@ class Save {
       }
 
       final relsElement = sheetRels.findAllElements('Relationships').first;
-      final drawingRId = 'rIdDrawing$drawingCount';
+      
+      // Look for existing rId to avoid duplicates
+      int rIdIndex = relsElement.children.whereType<XmlElement>().length + 1;
+      final drawingRId = 'rId$rIdIndex';
+      
       relsElement.children.add(XmlElement(XmlName('Relationship'), [
         XmlAttribute(XmlName('Id'), drawingRId),
         XmlAttribute(XmlName('Type'), 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing'),
         XmlAttribute(XmlName('Target'), '../drawings/drawing$drawingCount.xml'),
       ]));
 
-      // 4. Update Worksheet XML with <drawing> tag
+      // 4. Update Worksheet XML with <drawing> tag at the correct position
       final worksheet = _excel._xmlFiles[sheetId]!.findAllElements('worksheet').first;
       final existingDrawings = worksheet.findAllElements('drawing').toList();
       if (existingDrawings.isEmpty) {
-        worksheet.children.add(XmlElement(XmlName('drawing'), [
-          XmlAttribute(XmlName('r:id', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'), drawingRId),
-        ]));
+        final drawingElement = XmlElement(XmlName('drawing'), [
+          XmlAttribute(
+              XmlName('id',
+                  'http://schemas.openxmlformats.org/officeDocument/2006/relationships'),
+              drawingRId),
+        ]);
+
+        // Official order: ... mergeCells, phoneticPr, conditionalFormatting, dataValidation, hyperlinks, 
+        // printOptions, pageMargins, pageSetup, headerFooter, rowBreaks, colBreaks, customProperties, 
+        // cellWatches, ignoredErrors, smartTags, drawing, legacyDrawing, picture, oleObjects, drawingHF, extLst
+        int insertIndex = -1;
+        final tagsAfterDrawing = [
+          'legacyDrawing',
+          'picture',
+          'oleObjects',
+          'drawingHF',
+          'extLst'
+        ];
+
+        for (int i = 0; i < worksheet.children.length; i++) {
+          final child = worksheet.children[i];
+          if (child is XmlElement && tagsAfterDrawing.contains(child.name.local)) {
+            insertIndex = i;
+            break;
+          }
+        }
+
+        if (insertIndex != -1) {
+          worksheet.children.insert(insertIndex, drawingElement);
+        } else {
+          worksheet.children.add(drawingElement);
+        }
       }
     });
   }

@@ -30,8 +30,19 @@ part 'src/utilities/utility.dart';
 part 'src/utilities/constants.dart';
 part 'src/utilities/enum.dart';
 part 'src/utilities/chart_xml_writer.dart';
+part 'src/utilities/chart_color_config.dart';
 part 'src/utilities/archive.dart';
 part 'src/utilities/colors.dart';
+
+/// Chart Builders
+part 'src/utilities/chart_builders/chart_style_builder.dart';
+part 'src/utilities/chart_builders/column_bar_chart_builder.dart';
+part 'src/utilities/chart_builders/line_chart_builder.dart';
+part 'src/utilities/chart_builders/area_chart_builder.dart';
+part 'src/utilities/chart_builders/scatter_chart_builder.dart';
+part 'src/utilities/chart_builders/pie_chart_builder.dart';
+part 'src/utilities/chart_builders/radar_chart_builder.dart';
+part 'src/utilities/chart_builders/chart_style_builder_factory.dart';
 
 /// Save
 part 'src/save/save_file.dart';
