@@ -496,7 +496,7 @@ class Excel {
     int replaceCount = 0;
     if (_sheetMap[sheet] == null) return replaceCount;
 
-    _sheetMap['$sheet']!.findAndReplace(
+    return _sheetMap['$sheet']!.findAndReplace(
       source,
       target,
       first: first,
@@ -505,8 +505,6 @@ class Excel {
       startingColumn: startingColumn,
       endingColumn: endingColumn,
     );
-
-    return replaceCount;
   }
 
   ///
