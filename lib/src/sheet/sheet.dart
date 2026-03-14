@@ -708,28 +708,24 @@ class Sheet {
     /// Puts Data
     _putData(newRowIndex, newColumnIndex, value);
 
-    // check if the numberFormat works with the value provided
-    // otherwise fall back to the default for this value type
-    if (cellStyle != null) {
-      final numberFormat = cellStyle.numberFormat;
-      if (!numberFormat.accepts(value)) {
-        cellStyle =
-            cellStyle.copyWith(numberFormat: NumFormat.defaultFor(value));
-      }
-    } else {
-      final cellStyleBefore =
-          _sheetData[cellIndex.rowIndex]?[cellIndex.columnIndex]?.cellStyle;
-      if (cellStyleBefore != null &&
-          !cellStyleBefore.numberFormat.accepts(value)) {
-        cellStyle =
-            cellStyleBefore.copyWith(numberFormat: NumFormat.defaultFor(value));
-      }
-    }
-
     /// Puts the cellStyle
     if (cellStyle != null) {
       _sheetData[newRowIndex]![newColumnIndex]!._cellStyle = cellStyle;
       _excel._styleChanges = true;
+    } else {
+      final cell = _sheetData[newRowIndex]![newColumnIndex]!;
+      final newFormat = NumFormat.defaultFor(value);
+      if (cell._cellStyle != null) {
+        if (newFormat != cell._cellStyle!.numberFormat) {
+          cell._cellStyle = cell._cellStyle!.copyWith(
+            numberFormat: newFormat,
+          );
+          _excel._styleChanges = true;
+        }
+      } else {
+        cell._cellStyle = CellStyle(numberFormat: newFormat);
+        _excel._styleChanges = true;
+      }
     }
   }
 
@@ -1103,9 +1099,11 @@ class Sheet {
     }
 
     cell._value = value;
-    cell._cellStyle = CellStyle(numberFormat: NumFormat.defaultFor(value));
-    if (cell._cellStyle != NumFormat.standard_0) {
-      _excel._styleChanges = true;
+    if (cell._cellStyle == null) {
+      cell._cellStyle = CellStyle(numberFormat: NumFormat.defaultFor(value));
+      if (cell._cellStyle?.numberFormat != NumFormat.standard_0) {
+        _excel._styleChanges = true;
+      }
     }
 
     if ((_maxColumns - 1) < columnIndex) {
@@ -1291,9 +1289,9 @@ class Sheet {
             sourceData.value.toString().replaceAllMapped(source, (match) {
           if (first == -1 || first != replaceCount) {
             ++replaceCount;
-            return match.input.replaceRange(match.start, match.end, target);
+            return target;
           }
-          return match.input;
+          return match.group(0)!;
         });
         _sheetData[i]![j]!.value = TextCellValue(result);
       }
