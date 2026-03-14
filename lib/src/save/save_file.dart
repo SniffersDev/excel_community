@@ -1023,8 +1023,8 @@ class Save {
       // 1. Generate Chart XMLs and Drawing Relationships
       final drawingRelsBuilder = XmlBuilder();
       drawingRelsBuilder.processing('xml', 'version="1.0" encoding="UTF-8" standalone="yes"');
-      drawingRelsBuilder.element('Relationships', namespaces: <String, String?>{
-        'http://schemas.openxmlformats.org/package/2006/relationships': null,
+      drawingRelsBuilder.element('Relationships', namespaces: <String, String>{
+        'http://schemas.openxmlformats.org/package/2006/relationships': '',
       }, nest: () {
         for (int i = 0; i < sheet.charts.length; i++) {
           chartCount++;
@@ -1064,8 +1064,8 @@ class Save {
       if (sheetRels == null) {
         final relsBuilder = XmlBuilder();
         relsBuilder.processing('xml', 'version="1.0" encoding="UTF-8" standalone="yes"');
-        relsBuilder.element('Relationships', namespaces: <String, String?>{
-          'http://schemas.openxmlformats.org/package/2006/relationships': null,
+        relsBuilder.element('Relationships', namespaces: <String, String>{
+          'http://schemas.openxmlformats.org/package/2006/relationships': '',
         }, nest: () {});
         sheetRels = relsBuilder.buildDocument();
         _excel._xmlFiles[sheetRelsPath] = sheetRels;
