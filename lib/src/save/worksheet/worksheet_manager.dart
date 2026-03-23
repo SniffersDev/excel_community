@@ -6,7 +6,12 @@ class _WorksheetManager {
 
   _WorksheetManager(this._excel, this._save);
 
-  void setSheetElements() {
+  /// Sets up worksheet elements. Row/cell data is written directly to
+  /// [sheetDataBuffers] as XML strings (keyed by the xmlSheetId) instead
+  /// of building XmlElement DOM nodes. This dramatically reduces memory
+  /// allocations for large files.
+  void setSheetElements(
+      {required Map<String, StringBuffer> sheetDataBuffers}) {
     _excel._sharedStrings.clear();
 
     _excel._sheetMap.forEach((sheetName, sheetObject) {
@@ -14,6 +19,7 @@ class _WorksheetManager {
         _save.parser._createSheet(sheetName);
       }
 
+      // Clear existing DOM children of sheetData — we'll write directly
       if (_excel._sheets[sheetName]?.children.isNotEmpty ?? false) {
         _excel._sheets[sheetName]!.children.clear();
       }
@@ -52,7 +58,15 @@ class _WorksheetManager {
       }
 
       _setColumns(sheetObject, xmlFile);
-      _setRows(sheetName, sheetObject);
+
+      // Write row/cell data to StringBuffer instead of DOM
+      final xmlSheetId = _excel._xmlSheetId[sheetName];
+      if (xmlSheetId != null) {
+        final buffer = StringBuffer();
+        _writeRowsToBuffer(sheetName, sheetObject, buffer);
+        sheetDataBuffers[xmlSheetId] = buffer;
+      }
+
       _save._setHeaderFooter(sheetName);
     });
   }
@@ -111,21 +125,34 @@ class _WorksheetManager {
     }
   }
 
-  void _setRows(String sheetName, Sheet sheetObject) {
+  /// Writes row and cell XML data directly to a [StringBuffer] instead
+  /// of building XmlElement DOM nodes. This is the key optimization for
+  /// large files — it avoids creating millions of XmlElement objects.
+  void _writeRowsToBuffer(
+      String sheetName, Sheet sheetObject, StringBuffer buffer) {
     final customHeights = sheetObject.getRowHeights;
 
     for (var rowIndex = 0; rowIndex < sheetObject._maxRows; rowIndex++) {
-      double? height;
+      if (sheetObject._sheetData[rowIndex] == null) {
+        continue;
+      }
 
+      double? height;
       if (customHeights.containsKey(rowIndex)) {
         height = customHeights[rowIndex];
       }
 
-      if (sheetObject._sheetData[rowIndex] == null) {
-        continue;
+      // Write <row> opening tag
+      buffer.write('<row r="');
+      buffer.write(rowIndex + 1);
+      buffer.write('"');
+      if (height != null) {
+        buffer.write(' ht="');
+        buffer.write(height.toStringAsFixed(2));
+        buffer.write('" customHeight="1"');
       }
-      var foundRow = _createNewRow(
-          _excel._sheets[sheetName]! as XmlElement, rowIndex, height);
+      buffer.write('>');
+
       for (var columnIndex = 0;
           columnIndex < sheetObject._maxColumns;
           columnIndex++) {
@@ -133,10 +160,116 @@ class _WorksheetManager {
         if (data == null) {
           continue;
         }
-        _updateCell(sheetName, foundRow, columnIndex, rowIndex, data.value,
+        _writeCellToBuffer(
+            sheetName, buffer, columnIndex, rowIndex, data.value,
             data.cellStyle?.numberFormat);
       }
+
+      buffer.write('</row>');
     }
+  }
+
+  /// Writes a single cell's XML directly to the [buffer].
+  void _writeCellToBuffer(String sheet, StringBuffer buffer, int columnIndex,
+      int rowIndex, CellValue? value, NumFormat? numberFormat) {
+    int? sharedStringIndex;
+    if (value is TextCellValue) {
+      final existing = _excel._sharedStrings.tryFind(value.toString());
+      if (existing != null) {
+        sharedStringIndex = _excel._sharedStrings.add(existing, value.toString());
+      } else {
+        sharedStringIndex = _excel._sharedStrings.addFromString(value.toString());
+      }
+    }
+
+    String rC = getCellId(columnIndex, rowIndex);
+
+    // Write <c> opening tag with attributes
+    buffer.write('<c r="');
+    buffer.write(rC);
+    buffer.write('"');
+
+    // Style attribute
+    final cellStyle =
+        _excel._sheetMap[sheet]?._sheetData[rowIndex]?[columnIndex]?.cellStyle;
+
+    int? styleIndex;
+    if (_excel._styleChanges && cellStyle != null) {
+      int upperLevelPos = _checkPosition(_excel._cellStyleList, cellStyle);
+      if (upperLevelPos == -1) {
+        int lowerLevelPos = _checkPosition(_save._innerCellStyle, cellStyle);
+        if (lowerLevelPos != -1) {
+          upperLevelPos = lowerLevelPos + _excel._cellStyleList.length;
+        } else {
+          upperLevelPos = 0;
+        }
+      }
+      styleIndex = upperLevelPos;
+    } else if (_excel._cellStyleReferenced.containsKey(sheet) &&
+        _excel._cellStyleReferenced[sheet]!.containsKey(rC)) {
+      styleIndex = _excel._cellStyleReferenced[sheet]![rC];
+    }
+
+    if (styleIndex != null) {
+      buffer.write(' s="');
+      buffer.write(styleIndex);
+      buffer.write('"');
+    }
+
+    if (value is TextCellValue) {
+      buffer.write(' t="s"');
+    } else if (value is BoolCellValue) {
+      buffer.write(' t="b"');
+    }
+
+    buffer.write('>');
+
+    // Write cell value children
+    switch (value) {
+      case null:
+        break;
+      case TextCellValue():
+        buffer.write('<v>');
+        buffer.write(sharedStringIndex);
+        buffer.write('</v>');
+        break;
+      case FormulaCellValue():
+        buffer.write('<f>');
+        buffer.write(_escapeXml(value.formula));
+        buffer.write('</f><v>');
+        buffer.write(_escapeXml(value.write(numberFormat)));
+        buffer.write('</v>');
+        break;
+      case IntCellValue() ||
+            DoubleCellValue() ||
+            DateCellValue() ||
+            TimeCellValue() ||
+            DateTimeCellValue() ||
+            BoolCellValue():
+        buffer.write('<v>');
+        buffer.write(_escapeXml(value.write(numberFormat)));
+        buffer.write('</v>');
+        break;
+    }
+
+    buffer.write('</c>');
+  }
+
+  /// Escape special XML characters in text content.
+  static String _escapeXml(String text) {
+    if (!text.contains('&') &&
+        !text.contains('<') &&
+        !text.contains('>') &&
+        !text.contains('"') &&
+        !text.contains("'")) {
+      return text;
+    }
+    return text
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&apos;');
   }
 
   void _addNewColumn(XmlElement columns, int min, int max, double width) {
@@ -160,99 +293,5 @@ class _WorksheetManager {
     });
 
     return ((maxNumOfCharacters * 7.0 + 9.0) / 7.0 * 256).truncate() / 256;
-  }
-
-  XmlElement _createNewRow(XmlElement table, int rowIndex, double? height) {
-    var row = XmlElement(XmlName('row'), [
-      XmlAttribute(XmlName('r'), (rowIndex + 1).toString()),
-      if (height != null)
-        XmlAttribute(XmlName('ht'), height.toStringAsFixed(2)),
-      if (height != null) XmlAttribute(XmlName('customHeight'), '1'),
-    ], []);
-    table.children.add(row);
-    return row;
-  }
-
-  XmlElement _updateCell(String sheet, XmlElement row, int columnIndex,
-      int rowIndex, CellValue? value, NumFormat? numberFormat) {
-    var cell = _createCell(sheet, columnIndex, rowIndex, value, numberFormat);
-    row.children.add(cell);
-    return cell;
-  }
-
-  XmlElement _createCell(String sheet, int columnIndex, int rowIndex,
-      CellValue? value, NumFormat? numberFormat) {
-    SharedString? sharedString;
-    if (value is TextCellValue) {
-      sharedString = _excel._sharedStrings.tryFind(value.toString());
-      if (sharedString != null) {
-        _excel._sharedStrings.add(sharedString, value.toString());
-      } else {
-        sharedString = _excel._sharedStrings.addFromString(value.toString());
-      }
-    }
-
-    String rC = getCellId(columnIndex, rowIndex);
-
-    var attributes = <XmlAttribute>[
-      XmlAttribute(XmlName('r'), rC),
-      if (value is TextCellValue) XmlAttribute(XmlName('t'), 's'),
-      if (value is BoolCellValue) XmlAttribute(XmlName('t'), 'b'),
-    ];
-
-    final cellStyle =
-        _excel._sheetMap[sheet]?._sheetData[rowIndex]?[columnIndex]?.cellStyle;
-
-    if (_excel._styleChanges && cellStyle != null) {
-      int upperLevelPos = _checkPosition(_excel._cellStyleList, cellStyle);
-      if (upperLevelPos == -1) {
-        int lowerLevelPos = _checkPosition(_save._innerCellStyle, cellStyle);
-        if (lowerLevelPos != -1) {
-          upperLevelPos = lowerLevelPos + _excel._cellStyleList.length;
-        } else {
-          upperLevelPos = 0;
-        }
-      }
-      attributes.insert(
-        1,
-        XmlAttribute(XmlName('s'), '$upperLevelPos'),
-      );
-    } else if (_excel._cellStyleReferenced.containsKey(sheet) &&
-        _excel._cellStyleReferenced[sheet]!.containsKey(rC)) {
-      attributes.insert(
-        1,
-        XmlAttribute(
-            XmlName('s'), '${_excel._cellStyleReferenced[sheet]![rC]}'),
-      );
-    }
-
-
-    final List<XmlElement> children;
-    switch (value) {
-      case null:
-        children = [];
-      case TextCellValue():
-        children = [
-          XmlElement(XmlName('v'), [], [
-            XmlText(_excel._sharedStrings.indexOf(sharedString!).toString())
-          ]),
-        ];
-      case FormulaCellValue():
-        children = [
-          XmlElement(XmlName('f'), [], [XmlText(value.formula)]),
-          XmlElement(XmlName('v'), [], [XmlText(value.write(numberFormat))]),
-        ];
-      case IntCellValue() ||
-            DoubleCellValue() ||
-            DateCellValue() ||
-            TimeCellValue() ||
-            DateTimeCellValue() ||
-            BoolCellValue():
-        children = [
-          XmlElement(XmlName('v'), [], [XmlText(value.write(numberFormat))]),
-        ];
-    }
-
-    return XmlElement(XmlName('c'), attributes, children);
   }
 }

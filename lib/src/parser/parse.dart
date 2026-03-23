@@ -536,33 +536,346 @@ class Parser {
     var file = _excel._archive.findFile('xl/$target');
     file!.decompress();
 
-    var content = XmlDocument.parse(utf8.decode(file.content));
-    var worksheet = content.findElements('worksheet').first;
+    var rawXml = utf8.decode(file.content);
 
-    ///
-    /// check for right to left view
-    ///
-    var sheetView = worksheet.findAllElements('sheetView').toList();
-    if (sheetView.isNotEmpty) {
-      var sheetViewNode = sheetView.first;
-      var rtl = sheetViewNode.getAttribute('rightToLeft');
-      sheetObject.isRTL = rtl != null && rtl == '1';
+    // Find the <sheetData> section in the raw XML
+    final sheetDataOpenIdx = rawXml.indexOf('<sheetData');
+    final sheetDataCloseTag = '</sheetData>';
+    final sheetDataCloseIdx = rawXml.indexOf(sheetDataCloseTag);
+
+    // Check if we can use the optimized path
+    final canStreamParse = sheetDataOpenIdx != -1;
+
+    XmlDocument content;
+    if (canStreamParse) {
+      // Extract the sheetData content as a raw string
+      String sheetDataRaw;
+      String structuralXml;
+
+      final afterOpen = rawXml.indexOf('>', sheetDataOpenIdx);
+      final isSelfClosing =
+          afterOpen != -1 && rawXml[afterOpen - 1] == '/';
+
+      if (isSelfClosing) {
+        // <sheetData/> — no rows
+        sheetDataRaw = '';
+        // Replace with empty <sheetData/> for structural parse
+        structuralXml = rawXml;
+      } else if (sheetDataCloseIdx != -1) {
+        // Extract raw row data between <sheetData> and </sheetData>
+        sheetDataRaw =
+            rawXml.substring(afterOpen + 1, sheetDataCloseIdx);
+        // Replace sheetData content with empty for structural XML parse
+        structuralXml = rawXml.substring(0, afterOpen + 1) +
+            rawXml.substring(sheetDataCloseIdx);
+      } else {
+        // Malformed — fall back to full DOM parse
+        sheetDataRaw = '';
+        structuralXml = rawXml;
+      }
+
+      // Parse only the small structural XML (without row data)
+      content = XmlDocument.parse(structuralXml);
+      var worksheet = content.findElements('worksheet').first;
+
+      // Check for right to left view
+      var sheetView = worksheet.findAllElements('sheetView').toList();
+      if (sheetView.isNotEmpty) {
+        var sheetViewNode = sheetView.first;
+        var rtl = sheetViewNode.getAttribute('rightToLeft');
+        sheetObject.isRTL = rtl != null && rtl == '1';
+      }
+
+      // Parse rows/cells from the raw sheetData string directly
+      if (sheetDataRaw.isNotEmpty) {
+        _parseRowsFromString(sheetDataRaw, sheetObject, name);
+      }
+
+      _parseHeaderFooter(worksheet, sheetObject);
+      _parseColWidthsRowHeights(worksheet, sheetObject);
+
+      var sheet = worksheet.findElements('sheetData').first;
+      _excel._sheets[name] = sheet;
+    } else {
+      // Fallback: full DOM parse for files without sheetData
+      content = XmlDocument.parse(rawXml);
+      var worksheet = content.findElements('worksheet').first;
+
+      var sheetView = worksheet.findAllElements('sheetView').toList();
+      if (sheetView.isNotEmpty) {
+        var sheetViewNode = sheetView.first;
+        var rtl = sheetViewNode.getAttribute('rightToLeft');
+        sheetObject.isRTL = rtl != null && rtl == '1';
+      }
+      var sheet = worksheet.findElements('sheetData').first;
+
+      _findRows(sheet).forEach((child) {
+        _parseRow(child, sheetObject, name);
+      });
+
+      _parseHeaderFooter(worksheet, sheetObject);
+      _parseColWidthsRowHeights(worksheet, sheetObject);
+
+      _excel._sheets[name] = sheet;
     }
-    var sheet = worksheet.findElements('sheetData').first;
-
-    _findRows(sheet).forEach((child) {
-      _parseRow(child, sheetObject, name);
-    });
-
-    _parseHeaderFooter(worksheet, sheetObject);
-    _parseColWidthsRowHeights(worksheet, sheetObject);
-
-    _excel._sheets[name] = sheet;
 
     _excel._xmlFiles['xl/$target'] = content;
     _excel._xmlSheetId[name] = 'xl/$target';
 
     _normalizeTable(sheetObject);
+  }
+
+  /// Parse rows and cells directly from a raw XML string without building
+  /// a DOM tree. This is dramatically faster for large worksheets.
+  void _parseRowsFromString(
+      String sheetDataContent, Sheet sheetObject, String name) {
+    int pos = 0;
+    final len = sheetDataContent.length;
+
+    while (pos < len) {
+      // Find next <row
+      final rowStart = sheetDataContent.indexOf('<row', pos);
+      if (rowStart == -1) break;
+
+      // Find end of the row opening tag
+      final rowTagEnd = sheetDataContent.indexOf('>', rowStart);
+      if (rowTagEnd == -1) break;
+
+      // Check if self-closing: <row ... />
+      final isSelfClosing =
+          sheetDataContent[rowTagEnd - 1] == '/';
+
+      final rowTag = sheetDataContent.substring(rowStart, rowTagEnd + 1);
+      final rowIndex = _extractAttr(rowTag, 'r');
+
+      int rowEnd;
+      String rowContent;
+
+      if (isSelfClosing) {
+        // Self-closing row — no cell content
+        rowEnd = rowTagEnd + 1;
+        rowContent = '';
+      } else {
+        // Regular row — find </row>
+        final rowCloseTag = '</row>';
+        final rowCloseIdx =
+            sheetDataContent.indexOf(rowCloseTag, rowTagEnd);
+        if (rowCloseIdx == -1) break;
+        rowEnd = rowCloseIdx + rowCloseTag.length;
+        rowContent =
+            sheetDataContent.substring(rowTagEnd + 1, rowCloseIdx);
+      }
+
+      if (rowIndex == null) {
+        pos = rowEnd;
+        continue;
+      }
+      final rowIdx = int.parse(rowIndex) - 1;
+
+      // Extract custom row height from the row tag
+      final htAttr = _extractAttr(rowTag, 'ht');
+      if (htAttr != null) {
+        final height = double.tryParse(htAttr);
+        if (height != null && rowIdx >= 0) {
+          sheetObject._rowHeights[rowIdx] = height;
+        }
+      }
+
+      // Parse cells within this row (if non-empty)
+      if (rowContent.isNotEmpty) {
+        _parseCellsFromString(rowContent, sheetObject, rowIdx, name);
+      }
+
+      pos = rowEnd;
+    }
+  }
+
+  /// Parse cells from a raw XML string of a single row's content.
+  void _parseCellsFromString(
+      String rowContent, Sheet sheetObject, int rowIndex, String name) {
+    int pos = 0;
+    final len = rowContent.length;
+
+    while (pos < len) {
+      // Find next <c
+      final cellStart = rowContent.indexOf('<c ', pos);
+      if (cellStart == -1) break;
+
+      // Find end of cell — either self-closing or </c>
+      int cellEnd;
+      final selfCloseCheck = rowContent.indexOf('/>', cellStart);
+      final childCloseCheck = rowContent.indexOf('</c>', cellStart);
+
+      if (childCloseCheck == -1 && selfCloseCheck == -1) break;
+
+      bool isSelfClosing;
+      if (childCloseCheck == -1) {
+        isSelfClosing = true;
+        cellEnd = selfCloseCheck + 2;
+      } else if (selfCloseCheck == -1) {
+        isSelfClosing = false;
+        cellEnd = childCloseCheck + 4;
+      } else {
+        // Take whichever comes first, but need to check if self-close
+        // is within the opening tag (before any >)
+        final firstGt = rowContent.indexOf('>', cellStart);
+        if (firstGt != -1 && selfCloseCheck == firstGt - 1) {
+          isSelfClosing = true;
+          cellEnd = selfCloseCheck + 2;
+        } else {
+          isSelfClosing = false;
+          cellEnd = childCloseCheck + 4;
+        }
+      }
+
+      final cellXml = rowContent.substring(cellStart, cellEnd);
+
+      // Extract attributes from opening tag
+      final tagEnd = cellXml.indexOf('>');
+      final openingTag = cellXml.substring(0, tagEnd + 1);
+
+      final rAttr = _extractAttr(openingTag, 'r');
+      if (rAttr == null) {
+        pos = cellEnd;
+        continue;
+      }
+
+      // Get column index from cell reference (e.g., "A1" -> 0)
+      final coords = _cellCoordsFromCellId(rAttr);
+      final columnIndex = coords.$2;
+
+      final sAttr = _extractAttr(openingTag, 's');
+      final tAttr = _extractAttr(openingTag, 't');
+
+      int s = 0;
+      if (sAttr != null) {
+        try {
+          s = int.parse(sAttr);
+        } catch (_) {}
+
+        if (_excel._cellStyleReferenced[name] == null) {
+          _excel._cellStyleReferenced[name] = {rAttr: s};
+        } else {
+          _excel._cellStyleReferenced[name]![rAttr] = s;
+        }
+      }
+
+      CellValue? value;
+
+      if (!isSelfClosing) {
+        // Extract child content (between > and </c>)
+        final childContent = cellXml.substring(tagEnd + 1, cellXml.length - 4);
+
+        switch (tAttr) {
+          case 's': // shared string
+            final vVal = _extractElementText(childContent, 'v');
+            if (vVal != null) {
+              final sharedString = _excel._sharedStrings
+                  .value(int.parse(vVal.trim()));
+              value = TextCellValue.span(sharedString!.textSpan);
+            }
+            break;
+          case 'b': // boolean
+            final vVal = _extractElementText(childContent, 'v');
+            value = BoolCellValue(vVal == '1');
+            break;
+          case 'e': // error
+          case 'str': // formula string
+            final vVal = _extractElementText(childContent, 'v');
+            if (vVal != null) {
+              value = FormulaCellValue(_normalizeNewLine(vVal));
+            }
+            break;
+          case 'inlineStr':
+            final tVal = _extractElementText(childContent, 't');
+            if (tVal != null) {
+              value = TextCellValue(_normalizeNewLine(tVal));
+            }
+            break;
+          default: // number or null type
+            final fVal = _extractElementText(childContent, 'f');
+            if (fVal != null) {
+              value = FormulaCellValue(_normalizeNewLine(fVal));
+            } else {
+              final vVal = _extractElementText(childContent, 'v');
+              if (vVal != null) {
+                final v = _normalizeNewLine(vVal);
+                if (sAttr != null) {
+                  var numFmtId = _excel._numFmtIds[s];
+                  final numFormat =
+                      _excel._numFormats.getByNumFmtId(numFmtId);
+                  if (numFormat == null) {
+                    value = NumFormat.defaultNumeric.read(v);
+                  } else {
+                    value = numFormat.read(v);
+                  }
+                } else {
+                  value = NumFormat.defaultNumeric.read(v);
+                }
+              }
+            }
+        }
+      }
+
+      sheetObject.updateCell(
+        CellIndex.indexByColumnRow(
+            columnIndex: columnIndex, rowIndex: rowIndex),
+        value,
+        cellStyle: _excel._cellStyleList[s],
+      );
+
+      pos = cellEnd;
+    }
+  }
+
+  /// Extract an attribute value from an XML tag string.
+  /// e.g., _extractAttr('<row r="5">', 'r') returns '5'
+  static String? _extractAttr(String tag, String attrName) {
+    // Search for ' attrName="value"' — require space before attribute name
+    // to avoid matching substrings (e.g., 'spans' when looking for 's')
+    // Try double quotes first
+    var searchDQ = ' $attrName="';
+    var idx = tag.indexOf(searchDQ);
+    if (idx != -1) {
+      final start = idx + searchDQ.length;
+      final end = tag.indexOf('"', start);
+      if (end != -1) return tag.substring(start, end);
+    }
+    // Try single quotes
+    var searchSQ = " $attrName='";
+    idx = tag.indexOf(searchSQ);
+    if (idx != -1) {
+      final start = idx + searchSQ.length;
+      final end = tag.indexOf("'", start);
+      if (end != -1) return tag.substring(start, end);
+    }
+    return null;
+  }
+
+  /// Extract text content of a simple XML element from a string.
+  /// e.g., _extractElementText('<v>42</v><f>A1</f>', 'v') returns '42'
+  static String? _extractElementText(String content, String elementName) {
+    final openTag = '<$elementName>';
+    final closeTag = '</$elementName>';
+    final openIdx = content.indexOf(openTag);
+    if (openIdx == -1) return null;
+    final startIdx = openIdx + openTag.length;
+    final closeIdx = content.indexOf(closeTag, startIdx);
+    if (closeIdx == -1) return null;
+    final text = content.substring(startIdx, closeIdx);
+    // Unescape basic XML entities
+    return _unescapeXml(text);
+  }
+
+  /// Unescape XML entities back to their character equivalents.
+  static String _unescapeXml(String text) {
+    if (!text.contains('&')) return text;
+    return text
+        .replaceAll('&amp;', '&')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&apos;', "'");
   }
 
   _parseRow(XmlElement node, Sheet sheetObject, String name) {

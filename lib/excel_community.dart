@@ -69,6 +69,11 @@ part 'src/save/workbook/workbook_manager.dart';
 part 'src/save/self_correct_span.dart';
 part 'src/parser/parse.dart';
 
+/// Streaming API
+part 'src/streaming/excel_stream_models.dart';
+part 'src/streaming/excel_stream_writer.dart';
+part 'src/streaming/excel_stream_reader.dart';
+
 /// Sheet
 part 'src/sheet/sheet.dart';
 part 'src/sheet/sheet_dimensions.dart';

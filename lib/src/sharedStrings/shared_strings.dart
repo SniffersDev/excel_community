@@ -13,24 +13,25 @@ class _SharedStringsMaintainer {
     return _mapString[val];
   }
 
-  SharedString addFromString(String val) {
+  int addFromString(String val) {
     final newSharedString = SharedString(
         node: XmlElement(XmlName('si'), [], [
       XmlElement(XmlName('t'),
           [XmlAttribute(XmlName("space", "xml"), "preserve")], [XmlText(val)]),
-    ]));
+    ]),
+    cachedStringValue: val);
 
-    add(newSharedString, val);
-    return newSharedString;
+    return add(newSharedString, val);
   }
 
-  void add(SharedString val, String key) {
+  int add(SharedString val, String key) {
     _map[val]?.increaseCount();
     _map.putIfAbsent(val, () {
       _mapString[key] = val;
       _list.add(val);
       return _IndexingHolder(_index++);
     });
+    return _map[val]!.index;
   }
 
   int indexOf(SharedString val) {
@@ -67,8 +68,11 @@ class _IndexingHolder {
 class SharedString {
   final XmlElement node;
   final int _hashCode;
+  String? _cachedStringValue;
 
-  SharedString({required this.node}) : _hashCode = node.toString().hashCode;
+  SharedString({required this.node, String? cachedStringValue})
+      : _hashCode = (cachedStringValue ?? node.toString()).hashCode,
+        _cachedStringValue = cachedStringValue;
 
   @override
   String toString() {
@@ -163,6 +167,10 @@ class SharedString {
   }
 
   String get stringValue {
+    return _cachedStringValue ??= _computeStringValue();
+  }
+
+  String _computeStringValue() {
     var buffer = StringBuffer();
     node.findAllElements('t').forEach((child) {
       if (child.parentElement == null ||

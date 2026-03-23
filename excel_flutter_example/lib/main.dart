@@ -1,8 +1,11 @@
 import 'dart:io';
+import 'dart:js_interop';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart' hide Border, BorderStyle;
 import 'package:excel_community/excel_community.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:web/web.dart' as web;
 
 void main() {
   runApp(const MyApp());
@@ -483,6 +486,290 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  Future<void> _generateLargeExcel(int rowCount) async {
+    setState(() {
+      _isGenerating = true;
+      _status = 'Generating large Excel ($rowCount rows × 20 cols)...';
+    });
+
+    try {
+      final stopwatch = Stopwatch()..start();
+
+      var excel = Excel.createExcel();
+      var sheet = excel['Sheet1'];
+      const cols = 20;
+
+      for (var c = 0; c < cols; c++) {
+        sheet
+            .cell(CellIndex.indexByColumnRow(rowIndex: 0, columnIndex: c))
+            .value = TextCellValue('Column_$c');
+      }
+
+      for (var r = 1; r <= rowCount; r++) {
+        for (var c = 0; c < cols; c++) {
+          final cell = sheet
+              .cell(CellIndex.indexByColumnRow(rowIndex: r, columnIndex: c));
+          switch (c % 4) {
+            case 0:
+              cell.value = TextCellValue('R${r}C$c');
+              break;
+            case 1:
+              cell.value = IntCellValue(r * cols + c);
+              break;
+            case 2:
+              cell.value = DoubleCellValue(r * 1.5 + c * 0.1);
+              break;
+            case 3:
+              cell.value = IntCellValue(r + c);
+              break;
+          }
+        }
+      }
+
+      final generateTime = stopwatch.elapsed;
+      stopwatch.reset();
+
+      if (kIsWeb) {
+        final bytes = excel.save(fileName: 'large_${rowCount}_rows.xlsx');
+        final encodeTime = stopwatch.elapsed;
+
+        if (bytes != null && bytes.isNotEmpty) {
+          setState(() {
+            _status = '✅ Large Excel ($rowCount rows) generated!\n'
+                'Generation: ${generateTime.inMilliseconds}ms\n'
+                'Encode+Save: ${encodeTime.inMilliseconds}ms\n'
+                'File size: ${(bytes.length / 1024).toStringAsFixed(0)} KB\n'
+                '📥 Check Downloads folder';
+          });
+        } else {
+          setState(() {
+            _status = '❌ Failed: encode returned null/empty';
+          });
+        }
+      } else {
+        var bytes = excel.encode();
+        final encodeTime = stopwatch.elapsed;
+
+        if (bytes == null) {
+          setState(() => _status = 'Error: Failed to encode.');
+          return;
+        }
+
+        setState(() {
+          _status = '✅ Large Excel ($rowCount rows) encoded!\n'
+              'Generation: ${generateTime.inMilliseconds}ms\n'
+              'Encode: ${encodeTime.inMilliseconds}ms\n'
+              'File size: ${(bytes.length / 1024).toStringAsFixed(0)} KB';
+        });
+      }
+    } catch (e, stackTrace) {
+      setState(() {
+        _status = '❌ CRASH with $rowCount rows!\n'
+            'Error: $e\n'
+            'Stack: ${stackTrace.toString().length > 300 ? stackTrace.toString().substring(0, 300) : stackTrace}';
+      });
+      if (kDebugMode) {
+        print('Error generating large Excel: $e');
+        print('Stack trace: $stackTrace');
+      }
+    } finally {
+      setState(() => _isGenerating = false);
+    }
+  }
+
+  Future<void> _streamLargeExcel(int rowCount) async {
+    setState(() {
+      _isGenerating = true;
+      _status = 'Stream writing $rowCount rows × 20 cols...\n'
+          '⏳ Starting...';
+    });
+
+    // Yield to let the UI render the initial status
+    await Future.delayed(Duration.zero);
+
+    try {
+      final stopwatch = Stopwatch()..start();
+      const cols = 20;
+      const batchSize = 10000; // yield to UI every 10k rows
+
+      final writer = ExcelStreamWriter(sheetName: 'Sheet1');
+      writer.addHeaderRow(List.generate(cols, (c) => 'Column_$c'));
+
+      for (var r = 1; r <= rowCount; r++) {
+        writer.addRow(List.generate(cols, (c) {
+          switch (c % 4) {
+            case 0:
+              return TextCellValue('R${r}C$c');
+            case 1:
+              return IntCellValue(r * cols + c);
+            case 2:
+              return DoubleCellValue(r * 1.5 + c * 0.1);
+            default:
+              return IntCellValue(r + c);
+          }
+        }));
+
+        // Yield to the UI every batchSize rows
+        if (r % batchSize == 0) {
+          final pct = (r * 100 / rowCount).toStringAsFixed(0);
+          final elapsed = stopwatch.elapsed;
+          setState(() {
+            _status = 'Stream writing $rowCount rows × 20 cols...\n'
+                '📝 $r / $rowCount rows ($pct%)\n'
+                '⏱ Elapsed: ${elapsed.inSeconds}s';
+          });
+          await Future.delayed(Duration.zero);
+        }
+      }
+
+      final generateTime = stopwatch.elapsed;
+      setState(() {
+        _status = 'Rows generated in ${generateTime.inSeconds}s\n'
+            '📦 Encoding to XLSX...';
+      });
+      await Future.delayed(Duration.zero);
+      stopwatch.reset();
+
+      if (kIsWeb) {
+        final bytes = writer.encode();
+        final encodeTime = stopwatch.elapsed;
+
+        // Trigger download via package:web (works in both JS and WASM)
+        final uint8 = Uint8List.fromList(bytes);
+        final blob = web.Blob(
+          [uint8.toJS].toJS,
+          web.BlobPropertyBag(
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          ),
+        );
+        final url = web.URL.createObjectURL(blob);
+        final anchor = web.HTMLAnchorElement()
+          ..href = url
+          ..download = 'stream_${rowCount}_rows.xlsx';
+        web.document.body?.append(anchor);
+        anchor.click();
+        anchor.remove();
+        web.URL.revokeObjectURL(url);
+
+        setState(() {
+          _status = '✅ Stream Excel ($rowCount rows) generated!\n'
+              'Generation: ${generateTime.inMilliseconds}ms\n'
+              'Encode+Save: ${encodeTime.inMilliseconds}ms\n'
+              'File size: ${(bytes.length / 1024).toStringAsFixed(0)} KB\n'
+              '📥 Check Downloads folder';
+        });
+      } else {
+        final bytes = writer.encode();
+        final encodeTime = stopwatch.elapsed;
+
+        setState(() {
+          _status = '✅ Stream Excel ($rowCount rows) encoded!\n'
+              'Generation: ${generateTime.inMilliseconds}ms\n'
+              'Encode: ${encodeTime.inMilliseconds}ms\n'
+              'File size: ${(bytes.length / 1024).toStringAsFixed(0)} KB';
+        });
+      }
+    } catch (e, stackTrace) {
+      setState(() {
+        _status = '❌ STREAM CRASH with $rowCount rows!\n'
+            'Error: $e\n'
+            'Stack: ${stackTrace.toString().length > 300 ? stackTrace.toString().substring(0, 300) : stackTrace}';
+      });
+      if (kDebugMode) {
+        print('Error streaming large Excel: $e');
+        print('Stack trace: $stackTrace');
+      }
+    } finally {
+      setState(() => _isGenerating = false);
+    }
+  }
+
+  Future<void> _streamReadExcel() async {
+    setState(() {
+      _isGenerating = true;
+      _status = '📂 Pick an XLSX file to stream-read...';
+    });
+
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xlsx'],
+        withData: true,
+      );
+
+      if (result == null || result.files.single.bytes == null) {
+        setState(() {
+          _isGenerating = false;
+          _status = '⚠️ No file selected';
+        });
+        return;
+      }
+
+      final fileName = result.files.single.name;
+      final bytes = result.files.single.bytes!;
+
+      setState(() {
+        _status = '📖 Parsing "$fileName" (${(bytes.length / 1024 / 1024).toStringAsFixed(1)} MB)...\n'
+            '⏳ Loading shared strings...';
+      });
+      await Future.delayed(Duration.zero);
+
+      final stopwatch = Stopwatch()..start();
+      final reader = ExcelStreamReader.fromBytes(bytes);
+      final parseTime = stopwatch.elapsed;
+
+      final sheets = reader.sheetNames;
+      final results = StringBuffer();
+      results.writeln('✅ Stream read "$fileName" complete!');
+      results.writeln('Archive parse: ${parseTime.inMilliseconds}ms');
+      results.writeln('Sheets: ${sheets.join(", ")}');
+      results.writeln();
+
+      for (final sheetName in sheets) {
+        setState(() {
+          _status = '📖 Reading sheet "$sheetName"...';
+        });
+        await Future.delayed(Duration.zero);
+
+        stopwatch.reset();
+        var rowCount = 0;
+        var cellCount = 0;
+
+        for (final row in reader.readSheet(sheetName)) {
+          rowCount++;
+          cellCount += row.cells.length;
+
+          if (rowCount % 10000 == 0) {
+            setState(() {
+              _status = '📖 Reading "$sheetName"...\n'
+                  '📝 $rowCount rows read\n'
+                  '⏱ Elapsed: ${stopwatch.elapsed.inSeconds}s';
+            });
+            await Future.delayed(Duration.zero);
+          }
+        }
+
+        final readTime = stopwatch.elapsed;
+        results.writeln('📄 $sheetName: $rowCount rows, $cellCount cells (${readTime.inMilliseconds}ms)');
+      }
+
+      setState(() {
+        _status = results.toString();
+      });
+    } catch (e, stackTrace) {
+      setState(() {
+        _status = '❌ STREAM READ CRASH!\n'
+            'Error: $e\n'
+            'Stack: ${stackTrace.toString().length > 300 ? stackTrace.toString().substring(0, 300) : stackTrace}';
+      });
+      if (kDebugMode) {
+        print('Error stream reading Excel: $e');
+        print('Stack trace: $stackTrace');
+      }
+    } finally {
+      setState(() => _isGenerating = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -491,11 +778,11 @@ class _MyHomePageState extends State<MyHomePage> {
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         title: Text(widget.title),
       ),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(20.0),
         child: Center(
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: <Widget>[
               const Icon(Icons.table_chart, size: 80, color: Colors.blue),
               const SizedBox(height: 20),
@@ -585,6 +872,92 @@ class _MyHomePageState extends State<MyHomePage> {
                     backgroundColor: Colors.blue.shade50,
                     padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
                     textStyle: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+                const SizedBox(height: 30),
+                const Divider(),
+                const SizedBox(height: 10),
+                const Text(
+                  '⚡ Large File Stress Tests:',
+                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: () => _generateLargeExcel(1000),
+                  icon: const Icon(Icons.speed),
+                  label: const Text('1,000 rows × 20 cols'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.orange.shade100,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: () => _generateLargeExcel(5000),
+                  icon: const Icon(Icons.speed),
+                  label: const Text('5,000 rows × 20 cols'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.orange.shade200,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: () => _generateLargeExcel(10000),
+                  icon: const Icon(Icons.speed),
+                  label: const Text('10,000 rows × 20 cols'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red.shade100,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: () => _generateLargeExcel(400000),
+                  icon: const Icon(Icons.speed),
+                  label: const Text('400,000 rows × 10 cols'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red.shade300,
+                  ),
+                ),
+                const SizedBox(height: 30),
+                const Divider(),
+                const SizedBox(height: 10),
+                const Text(
+                  '🚀 Streaming API Stress Tests:',
+                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: () => _streamLargeExcel(10000),
+                  icon: const Icon(Icons.stream),
+                  label: const Text('Stream 10,000 rows × 20 cols'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green.shade100,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: () => _streamLargeExcel(100000),
+                  icon: const Icon(Icons.stream),
+                  label: const Text('Stream 100,000 rows × 20 cols'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green.shade200,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: () => _streamLargeExcel(400000),
+                  icon: const Icon(Icons.stream),
+                  label: const Text('Stream 400,000 rows × 20 cols'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green.shade400,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  onPressed: _streamReadExcel,
+                  icon: const Icon(Icons.file_open),
+                  label: const Text('Stream Read XLSX File'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue.shade200,
                   ),
                 ),
               ],
