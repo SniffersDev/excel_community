@@ -4,8 +4,8 @@ The Streaming API provides memory-efficient Excel reading and writing for large 
 Unlike the DOM-based `Excel` class, it never builds the full spreadsheet in memory, making it ideal for **browser environments** and **resource-constrained** targets.
 
 > [!NOTE]
-> The Streaming API supports **text**, **int**, **double**, **bool**, **date**, **time**, and **datetime** cell types.  
-> It does **not** support charts, merged cells, styles, or formulas.
+> The Streaming API supports **text**, **int**, **double**, **bool**, **date**, **time**, and **datetime** cell types, plus **cell styling** (fonts, fills, borders, alignment).  
+> It does **not** support charts, merged cells, or formulas.
 
 ---
 
@@ -75,6 +75,54 @@ print('Generated ${(bytes.length / 1024 / 1024).toStringAsFixed(1)} MB');
 
 > [!IMPORTANT]
 > `encode()` can only be called **once**. After encoding, no more rows or sheets can be added.
+
+### Cell styling
+
+You can optionally style header rows and individual cells using the existing `CellStyle` class:
+
+```dart
+// Styled header row
+final headerStyle = CellStyle(
+  bold: true,
+  fontSize: 14,
+  fontColorHex: ExcelColor.white,
+  backgroundColorHex: ExcelColor.blue,
+  horizontalAlign: HorizontalAlign.Center,
+);
+
+final writer = ExcelStreamWriter(sheetName: 'Report');
+writer.addHeaderRow(['Name', 'Revenue', 'Status'], headerStyle: headerStyle);
+
+// Per-cell styling (parallel list — null = unstyled)
+final greenText = CellStyle(
+  bold: true,
+  fontColorHex: ExcelColor.fromHexString('FF4CAF50'),
+);
+
+writer.addRow(
+  [TextCellValue('Alice'), IntCellValue(50000), TextCellValue('Active')],
+  styles: [null, null, greenText],
+);
+
+final bytes = writer.encode();
+```
+
+**Supported style properties:** bold, italic, underline, font size, font family, font color, background color, horizontal/vertical alignment, text wrapping, and borders (all sides with style and color).
+
+```dart
+// Bordered cells
+final bordered = CellStyle(
+  leftBorder: Border(borderStyle: BorderStyle.Thin, borderColorHex: ExcelColor.black),
+  rightBorder: Border(borderStyle: BorderStyle.Thin, borderColorHex: ExcelColor.black),
+  topBorder: Border(borderStyle: BorderStyle.Thin, borderColorHex: ExcelColor.black),
+  bottomBorder: Border(borderStyle: BorderStyle.Thin, borderColorHex: ExcelColor.black),
+);
+
+writer.addRow([TextCellValue('Bordered cell')], styles: [bordered]);
+```
+
+> [!TIP]
+> Identical styles are deduplicated automatically — applying the same `CellStyle` to thousands of cells adds no overhead to the output file.
 
 ---
 
@@ -179,8 +227,8 @@ print(rows[0].cells[0].value); // world
 |---|---|
 | `ExcelStreamWriter({String sheetName})` | Create a writer with an initial sheet (default `'Sheet1'`). |
 | `addSheet(String name)` | Add a new sheet and make it the active target. Returns `this` for chaining. |
-| `addHeaderRow(List<String> headers)` | Convenience to add a row of `TextCellValue` headers. |
-| `addRow(List<CellValue?> values)` | Append a row of typed cell values to the active sheet. |
+| `addHeaderRow(List<String> headers, {CellStyle? headerStyle})` | Convenience to add a row of text headers, optionally styled. |
+| `addRow(List<CellValue?> values, {List<CellStyle?>? styles})` | Append a row with optional per-cell styles. |
 | `encode()` | Produce the final XLSX bytes. **One-shot** — cannot be called twice. |
 | `save({String fileName})` | Web only — calls `encode()` then triggers a browser download. |
 
@@ -215,6 +263,6 @@ print(rows[0].cells[0].value); // world
 |---|---|---|
 | **Best for** | Small–medium files, full editing | Large files, append-only writes, linear reads |
 | **Memory** | Entire workbook held in memory | Row-at-a-time |
-| **Features** | Styles, formulas, merges, charts | Cell values only |
+| **Features** | Styles, formulas, merges, charts | Cell values + styles (no formulas/merges/charts) |
 | **Row limit** | Bounded by available RAM | 400k+ rows tested |
 | **Interop** | ↔ Stream API (read/write) | ↔ DOM API (read/write) |

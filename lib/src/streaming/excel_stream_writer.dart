@@ -6,18 +6,20 @@ part of excel_community;
 /// Designed for large files (400k+ rows) in browser environments where
 /// the DOM-based [Excel] class would run out of memory.
 ///
-/// Supports multiple sheets, mixed cell types, and shared strings.
-/// Does NOT support charts, merged cells, styles, or formulas.
+/// Supports multiple sheets, mixed cell types, shared strings, and
+/// optional cell styling (fonts, fills, borders, alignment).
+/// Does NOT support charts, merged cells, or formulas.
 ///
 /// ```dart
-/// final writer = ExcelStreamWriter(sheetName: 'Sales');
-/// writer.addHeaderRow(['Month', 'Revenue', 'Profit']);
-/// writer.addRow([TextCellValue('Jan'), IntCellValue(1000), IntCellValue(200)]);
-/// // ... add more rows
+/// final headerStyle = CellStyle(
+///   bold: true,
+///   fontColorHex: ExcelColor.white,
+///   backgroundColorHex: ExcelColor.blue,
+/// );
 ///
-/// writer.addSheet('Inventory');
-/// writer.addHeaderRow(['SKU', 'Qty']);
-/// writer.addRow([TextCellValue('A001'), IntCellValue(500)]);
+/// final writer = ExcelStreamWriter(sheetName: 'Sales');
+/// writer.addHeaderRow(['Month', 'Revenue'], headerStyle: headerStyle);
+/// writer.addRow([TextCellValue('Jan'), IntCellValue(1000)]);
 ///
 /// final bytes = writer.encode();
 /// ```
@@ -31,6 +33,40 @@ class ExcelStreamWriter {
   late _StreamSheet _activeSheet;
 
   bool _encoded = false;
+
+  // ── Style registries ──────────────────────────────────────────────
+  // Index 0 in each list is the default (unstyled) entry.
+
+  /// Unique font definitions. Index 0 = default Calibri 11.
+  final List<_FontStyle> _fonts = [
+    _FontStyle(fontSize: 11, fontFamily: 'Calibri'),
+  ];
+
+  /// Unique fill patterns. Index 0 = none, index 1 = gray125 (required by Excel).
+  final List<String> _fills = ['none', 'gray125'];
+
+  /// Unique border sets. Index 0 = empty borders.
+  final List<_BorderSet> _borders = [
+    _BorderSet(
+      leftBorder: Border(),
+      rightBorder: Border(),
+      topBorder: Border(),
+      bottomBorder: Border(),
+      diagonalBorder: Border(),
+      diagonalBorderUp: false,
+      diagonalBorderDown: false,
+    ),
+  ];
+
+  /// Unique cellXf records (font+fill+border+alignment combo).
+  /// Each entry is a tuple: (fontId, fillId, borderId, CellStyle?).
+  /// Index 0 = default unstyled xf.
+  final List<_StreamXf> _xfs = [
+    _StreamXf(fontId: 0, fillId: 0, borderId: 0, style: null),
+  ];
+
+  /// Cache: CellStyle → xfId for deduplication.
+  final Map<CellStyle, int> _styleToXfId = {};
 
   /// Create a new streaming writer. The first sheet is created automatically.
   ExcelStreamWriter({String sheetName = 'Sheet1'}) {
@@ -47,12 +83,22 @@ class ExcelStreamWriter {
   }
 
   /// Add a header row of text values to the active sheet.
-  void addHeaderRow(List<String> headers) {
-    addRow(headers.map((h) => TextCellValue(h)).toList());
+  ///
+  /// If [headerStyle] is provided, every cell in the header row
+  /// will use that style (e.g. bold, colored background).
+  void addHeaderRow(List<String> headers, {CellStyle? headerStyle}) {
+    final values = headers.map((h) => TextCellValue(h)).toList();
+    final styles = headerStyle != null
+        ? List<CellStyle?>.filled(headers.length, headerStyle)
+        : null;
+    addRow(values, styles: styles);
   }
 
   /// Add a data row to the active sheet.
-  void addRow(List<CellValue?> values) {
+  ///
+  /// [styles] is an optional parallel list of [CellStyle] for each cell.
+  /// Pass `null` for unstyled cells within the list.
+  void addRow(List<CellValue?> values, {List<CellStyle?>? styles}) {
     if (_encoded) throw StateError('Cannot add rows after encode()');
 
     final rowIndex = _activeSheet.rowCount;
@@ -65,15 +111,20 @@ class ExcelStreamWriter {
     for (var col = 0; col < values.length; col++) {
       final value = values[col];
       if (value == null) continue;
-      _writeCell(buffer, col, rowIndex, value);
+      final style =
+          (styles != null && col < styles.length) ? styles[col] : null;
+      _writeCell(buffer, col, rowIndex, value, style);
     }
 
     buffer.write('</row>');
     _activeSheet.rowCount++;
   }
 
+  // ── Cell writing ─────────────────────────────────────────────────
+
   void _writeCell(
-      StringBuffer buffer, int col, int row, CellValue value) {
+      StringBuffer buffer, int col, int row, CellValue value,
+      [CellStyle? style]) {
     final cellRef = getCellId(col, row);
 
     buffer.write('<c r="');
@@ -84,6 +135,14 @@ class ExcelStreamWriter {
       buffer.write(' t="s"');
     } else if (value is BoolCellValue) {
       buffer.write(' t="b"');
+    }
+
+    // Apply style index if provided
+    if (style != null) {
+      final xfId = _resolveStyleId(style);
+      buffer.write(' s="');
+      buffer.write(xfId);
+      buffer.write('"');
     }
 
     buffer.write('><v>');
@@ -117,15 +176,78 @@ class ExcelStreamWriter {
         buffer.write(value.write(null));
         break;
       case FormulaCellValue():
-        // For formulas, write <f> and <v> differently
-        buffer.write('</v>'); // close the prematurely opened <v>
-        // Rewrite: remove the <v> we already wrote
-        // Actually, let's handle this properly in the switch
         break;
     }
 
     buffer.write('</v></c>');
   }
+
+  // ── Style resolution ────────────────────────────────────────────
+
+  /// Returns the xfId for a [CellStyle], registering new font/fill/border
+  /// entries as needed. Uses a cache for deduplication.
+  int _resolveStyleId(CellStyle style) {
+    final cached = _styleToXfId[style];
+    if (cached != null) return cached;
+
+    // -- Font --
+    final font = _FontStyle(
+      bold: style.isBold,
+      italic: style.isItalic,
+      fontColorHex: style.fontColor,
+      underline: style.underline,
+      fontSize: style.fontSize,
+      fontFamily: style.fontFamily,
+    );
+    int fontId = _fonts.indexOf(font);
+    if (fontId == -1) {
+      fontId = _fonts.length;
+      _fonts.add(font);
+    }
+
+    // -- Fill --
+    final bgHex = style.backgroundColor.colorHex;
+    int fillId;
+    if (bgHex == 'none') {
+      fillId = 0;
+    } else {
+      fillId = _fills.indexOf(bgHex);
+      if (fillId == -1) {
+        fillId = _fills.length;
+        _fills.add(bgHex);
+      }
+    }
+
+    // -- Border --
+    final borderSet = _BorderSet(
+      leftBorder: style.leftBorder,
+      rightBorder: style.rightBorder,
+      topBorder: style.topBorder,
+      bottomBorder: style.bottomBorder,
+      diagonalBorder: style.diagonalBorder,
+      diagonalBorderUp: style.diagonalBorderUp,
+      diagonalBorderDown: style.diagonalBorderDown,
+    );
+    int borderId = _borders.indexOf(borderSet);
+    if (borderId == -1) {
+      borderId = _borders.length;
+      _borders.add(borderSet);
+    }
+
+    // -- XF record --
+    final xf = _StreamXf(
+        fontId: fontId, fillId: fillId, borderId: borderId, style: style);
+    int xfId = _xfs.indexOf(xf);
+    if (xfId == -1) {
+      xfId = _xfs.length;
+      _xfs.add(xf);
+    }
+
+    _styleToXfId[style] = xfId;
+    return xfId;
+  }
+
+  // ── Encoding ─────────────────────────────────────────────────────
 
   /// Encode all sheets into XLSX bytes.
   List<int> encode() {
@@ -151,7 +273,7 @@ class ExcelStreamWriter {
 
     // 5. xl/styles.xml
     archive.addFile(
-        _makeArchiveFile('xl/styles.xml', _buildMinimalStyles()));
+        _makeArchiveFile('xl/styles.xml', _buildStyles()));
 
     // 6. xl/sharedStrings.xml
     archive.addFile(_makeArchiveFile(
@@ -180,6 +302,8 @@ class ExcelStreamWriter {
           ? CompressionType.none
           : CompressionType.deflate;
   }
+
+  // ── XML builders ──────────────────────────────────────────────────
 
   String _buildContentTypes() {
     final buf = StringBuffer();
@@ -232,15 +356,136 @@ class ExcelStreamWriter {
     return buf.toString();
   }
 
-  String _buildMinimalStyles() {
-    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        '<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>'
-        '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
-        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
-        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-        '<cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>'
-        '</styleSheet>';
+  // ── Full styles.xml builder ──────────────────────────────────────
+
+  String _buildStyles() {
+    final buf = StringBuffer();
+    buf.write('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>');
+    buf.write('<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">');
+
+    // Fonts
+    buf.write('<fonts count="${_fonts.length}">');
+    for (final font in _fonts) {
+      buf.write('<font>');
+      if (font.isBold) buf.write('<b/>');
+      if (font.isItalic) buf.write('<i/>');
+      if (font.underline == Underline.Single) {
+        buf.write('<u/>');
+      } else if (font.underline == Underline.Double) {
+        buf.write('<u val="double"/>');
+      }
+      if (font.fontSize != null) {
+        buf.write('<sz val="${font.fontSize}"/>');
+      }
+      if (font.fontColor.colorHex != 'FF000000' &&
+          font.fontColor.colorHex != 'none') {
+        buf.write('<color rgb="${font.fontColor.colorHex}"/>');
+      }
+      if (font.fontFamily != null && font.fontFamily!.isNotEmpty) {
+        buf.write('<name val="${_escapeXmlStream(font.fontFamily!)}"/>');
+      }
+      buf.write('</font>');
+    }
+    buf.write('</fonts>');
+
+    // Fills
+    buf.write('<fills count="${_fills.length}">');
+    for (final fill in _fills) {
+      if (fill == 'none' || fill == 'gray125' || fill == 'lightGray') {
+        buf.write('<fill><patternFill patternType="$fill"/></fill>');
+      } else {
+        // Solid color fill
+        buf.write('<fill><patternFill patternType="solid">');
+        buf.write('<fgColor rgb="$fill"/>');
+        buf.write('<bgColor rgb="$fill"/>');
+        buf.write('</patternFill></fill>');
+      }
+    }
+    buf.write('</fills>');
+
+    // Borders
+    buf.write('<borders count="${_borders.length}">');
+    for (final bs in _borders) {
+      buf.write('<border');
+      if (bs.diagonalBorderDown) buf.write(' diagonalDown="1"');
+      if (bs.diagonalBorderUp) buf.write(' diagonalUp="1"');
+      buf.write('>');
+
+      _writeBorderSide(buf, 'left', bs.leftBorder);
+      _writeBorderSide(buf, 'right', bs.rightBorder);
+      _writeBorderSide(buf, 'top', bs.topBorder);
+      _writeBorderSide(buf, 'bottom', bs.bottomBorder);
+      _writeBorderSide(buf, 'diagonal', bs.diagonalBorder);
+
+      buf.write('</border>');
+    }
+    buf.write('</borders>');
+
+    // CellStyleXfs (base styles)
+    buf.write('<cellStyleXfs count="1">');
+    buf.write('<xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>');
+    buf.write('</cellStyleXfs>');
+
+    // CellXfs (actual cell format records)
+    buf.write('<cellXfs count="${_xfs.length}">');
+    for (final xf in _xfs) {
+      buf.write('<xf');
+      buf.write(' numFmtId="0"');
+      buf.write(' fontId="${xf.fontId}"');
+      buf.write(' fillId="${xf.fillId}"');
+      buf.write(' borderId="${xf.borderId}"');
+      buf.write(' xfId="0"');
+      if (xf.fontId != 0) buf.write(' applyFont="1"');
+      if (xf.fillId != 0) buf.write(' applyFill="1"');
+      if (xf.borderId != 0) buf.write(' applyBorder="1"');
+
+      final style = xf.style;
+      final hasAlignment = style != null &&
+          (style.horizontalAlignment != HorizontalAlign.Left ||
+              style.verticalAlignment != VerticalAlign.Bottom ||
+              style.wrap != null);
+
+      if (hasAlignment) {
+        buf.write(' applyAlignment="1"');
+      }
+
+      if (hasAlignment) {
+        buf.write('><alignment');
+        buf.write(
+            ' horizontal="${style!.horizontalAlignment.toString().split('.').last.toLowerCase()}"');
+        buf.write(
+            ' vertical="${style.verticalAlignment.toString().split('.').last.toLowerCase()}"');
+        if (style.wrap == TextWrapping.WrapText) {
+          buf.write(' wrapText="1"');
+        } else if (style.wrap == TextWrapping.Clip) {
+          buf.write(' shrinkToFit="1"');
+        }
+        buf.write('/></xf>');
+      } else {
+        buf.write('/>');
+      }
+    }
+    buf.write('</cellXfs>');
+
+    buf.write('</styleSheet>');
+    return buf.toString();
+  }
+
+  void _writeBorderSide(StringBuffer buf, String side, Border border) {
+    final style = border.borderStyle;
+    final color = border.borderColorHex;
+
+    if (style == null && color == null) {
+      buf.write('<$side/>');
+    } else {
+      buf.write('<$side');
+      if (style != null) buf.write(' style="${style.style}"');
+      buf.write('>');
+      if (color != null) {
+        buf.write('<color rgb="$color"/>');
+      }
+      buf.write('</$side>');
+    }
   }
 
   String _buildSharedStrings() {
@@ -300,4 +545,22 @@ class _StreamSheet {
   int rowCount = 0;
 
   _StreamSheet(this.name);
+}
+
+/// Internal cellXf record for style deduplication.
+class _StreamXf extends Equatable {
+  final int fontId;
+  final int fillId;
+  final int borderId;
+  final CellStyle? style;
+
+  const _StreamXf({
+    required this.fontId,
+    required this.fillId,
+    required this.borderId,
+    required this.style,
+  });
+
+  @override
+  List<Object?> get props => [fontId, fillId, borderId, style];
 }

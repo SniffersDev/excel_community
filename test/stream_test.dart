@@ -260,4 +260,142 @@ void main() {
           reason: '400k stream write should be fast');
     }, timeout: Timeout(Duration(minutes: 5)));
   });
+
+  group('ExcelStreamWriter Styling', () {
+    test('styled header round-trip', () {
+      final headerStyle = CellStyle(
+        bold: true,
+        fontSize: 14,
+        fontColorHex: ExcelColor.white,
+        backgroundColorHex: ExcelColor.blue,
+        horizontalAlign: HorizontalAlign.Center,
+      );
+
+      final writer = ExcelStreamWriter(sheetName: 'Styled');
+      writer.addHeaderRow(['Name', 'Age'], headerStyle: headerStyle);
+      writer.addRow([TextCellValue('Alice'), IntCellValue(30)]);
+
+      final bytes = writer.encode();
+      final excel = Excel.decodeBytes(bytes);
+      final sheet = excel.tables['Styled']!;
+
+      expect(sheet.maxRows, equals(2));
+
+      // Verify header cells got styled
+      final headerCell = sheet.rows[0][0]!;
+      final style = headerCell.cellStyle!;
+      expect(style.isBold, isTrue);
+      expect(style.fontSize, equals(14));
+
+      // Data row should have default style
+      final dataCell = sheet.rows[1][0]!;
+      expect(dataCell.value.toString(), equals('Alice'));
+    });
+
+    test('per-cell styles', () {
+      final boldStyle = CellStyle(bold: true);
+      final italicStyle = CellStyle(italic: true);
+
+      final writer = ExcelStreamWriter(sheetName: 'Mixed');
+      writer.addRow(
+        [TextCellValue('Bold'), TextCellValue('Normal'), TextCellValue('Italic')],
+        styles: [boldStyle, null, italicStyle],
+      );
+
+      final bytes = writer.encode();
+      final excel = Excel.decodeBytes(bytes);
+      final sheet = excel.tables['Mixed']!;
+
+      expect(sheet.rows[0][0]!.cellStyle!.isBold, isTrue);
+      // Unstyled cell (null in styles list) — should not be bold/italic
+      expect(sheet.rows[0][2]!.cellStyle!.isItalic, isTrue);
+    });
+
+    test('style deduplication', () {
+      final style = CellStyle(bold: true);
+
+      final writer = ExcelStreamWriter();
+      // Apply the same style to 100 cells
+      for (var i = 0; i < 100; i++) {
+        writer.addRow(
+          [TextCellValue('Row $i')],
+          styles: [style],
+        );
+      }
+
+      final bytes = writer.encode();
+      // Verify the file is valid and can be opened
+      final excel = Excel.decodeBytes(bytes);
+      expect(excel.tables['Sheet1']!.maxRows, equals(100));
+
+      // All rows should be bold
+      expect(excel.tables['Sheet1']!.rows[0][0]!.cellStyle!.isBold, isTrue);
+      expect(excel.tables['Sheet1']!.rows[99][0]!.cellStyle!.isBold, isTrue);
+    });
+
+    test('unstyled rows backward compatible', () {
+      // This should produce identical output to the old behavior
+      final writer = ExcelStreamWriter(sheetName: 'Plain');
+      writer.addHeaderRow(['A', 'B']);
+      writer.addRow([IntCellValue(1), IntCellValue(2)]);
+
+      final bytes = writer.encode();
+      final excel = Excel.decodeBytes(bytes);
+      final sheet = excel.tables['Plain']!;
+
+      expect(sheet.maxRows, equals(2));
+      expect(sheet.rows[0][0]!.value.toString(), equals('A'));
+      expect(sheet.rows[1][0]!.value.toString(), equals('1'));
+    });
+
+    test('border styles round-trip', () {
+      final borderedStyle = CellStyle(
+        leftBorder: Border(
+          borderStyle: BorderStyle.Thin,
+          borderColorHex: ExcelColor.black,
+        ),
+        rightBorder: Border(
+          borderStyle: BorderStyle.Thin,
+          borderColorHex: ExcelColor.black,
+        ),
+        topBorder: Border(
+          borderStyle: BorderStyle.Thin,
+          borderColorHex: ExcelColor.black,
+        ),
+        bottomBorder: Border(
+          borderStyle: BorderStyle.Thin,
+          borderColorHex: ExcelColor.black,
+        ),
+      );
+
+      final writer = ExcelStreamWriter();
+      writer.addRow(
+        [TextCellValue('Bordered')],
+        styles: [borderedStyle],
+      );
+
+      final bytes = writer.encode();
+      final excel = Excel.decodeBytes(bytes);
+      final cell = excel.tables['Sheet1']!.rows[0][0]!;
+      expect(cell.cellStyle!.leftBorder.borderStyle, equals(BorderStyle.Thin));
+      expect(cell.cellStyle!.topBorder.borderStyle, equals(BorderStyle.Thin));
+    });
+
+    test('background color fill', () {
+      final coloredStyle = CellStyle(
+        backgroundColorHex: ExcelColor.fromHexString('FF4CAF50'),
+      );
+
+      final writer = ExcelStreamWriter();
+      writer.addRow(
+        [TextCellValue('Green')],
+        styles: [coloredStyle],
+      );
+
+      final bytes = writer.encode();
+      final excel = Excel.decodeBytes(bytes);
+      final cell = excel.tables['Sheet1']!.rows[0][0]!;
+      expect(cell.cellStyle!.backgroundColor.colorHex, equals('FF4CAF50'));
+    });
+  });
 }
