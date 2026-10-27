@@ -83,8 +83,13 @@ class ExcelStreamReader {
     Future<void> Function()? pause,
     int sliceSize = defaultSliceSize,
   }) async* {
+    // Inflating the sheet and loading the shared strings are the two
+    // synchronous blocks before the first row; give the caller a turn after
+    // each so a progress dialog can paint.
     final file = _sheetFile(sheetName);
+    if (pause != null) await pause();
     _loadSharedStrings();
+    if (pause != null) await pause();
     var nextPause = sliceSize;
     for (final scanned in _scanRows(file.content)) {
       yield scanned.row;
@@ -193,26 +198,46 @@ class ExcelStreamReader {
 
     if (ssFile == null) return;
     ssFile.decompress();
-    final ssDoc = XmlDocument.parse(utf8.decode(ssFile.content));
+    final bytes = ssFile.content;
+    final list = _sharedStringsList!;
 
-    for (final si in ssDoc.findAllElements('si')) {
-      final buf = StringBuffer();
-      for (final t in si.findAllElements('t')) {
-        // Skip phonetic run text
-        if (t.parentElement != null &&
-            t.parentElement!.name.local == 'rPh') {
-          continue;
-        }
-        buf.write(t.innerText);
+    // Scan <si>…</si> on the bytes, like the rows: a 10 MB table of a few
+    // hundred thousand strings costs one small string per item instead of
+    // a DOM of the whole part. Every <si>, empty or not, is one index.
+    var pos = 0;
+    while (true) {
+      final siStart = _indexOf(bytes, _siOpen, pos);
+      if (siStart == -1) break;
+      final afterTag = siStart + _siOpen.length;
+      if (afterTag >= bytes.length) break;
+      if (bytes[afterTag] == _slash) {
+        list.add(''); // <si/>
+        pos = afterTag + 2;
+        continue;
       }
-      _sharedStringsList!.add(buf.toString());
+      final siEnd = _indexOf(bytes, _siClose, afterTag);
+      if (siEnd == -1) break;
+      list.add(_sharedItemText(utf8.decoder.convert(bytes, afterTag + 1, siEnd)));
+      pos = siEnd + _siClose.length;
     }
   }
+
+  /// The text of one shared string item: its `<t>` runs concatenated,
+  /// phonetic runs (`<rPh>`) left out, entities decoded.
+  static String _sharedItemText(String si) {
+    final withoutPhonetic =
+        si.contains('<rPh') ? si.replaceAll(_phoneticRun, '') : si;
+    return _inlineText(withoutPhonetic);
+  }
+
+  static final RegExp _phoneticRun = RegExp(r'<rPh[\s\S]*?</rPh>');
 
   // ── Byte-level row scanning ──────────────────────────────────────
 
   static final List<int> _rowOpen = utf8.encode('<row');
   static final List<int> _rowClose = utf8.encode('</row>');
+  static final List<int> _siOpen = utf8.encode('<si');
+  static final List<int> _siClose = utf8.encode('</si>');
   static final List<int> _sheetDataOpen = utf8.encode('<sheetData');
   static final List<int> _sheetDataClose = utf8.encode('</sheetData>');
   static const int _gt = 0x3E; // '>'

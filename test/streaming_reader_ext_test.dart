@@ -56,6 +56,50 @@ void main() {
       ]);
     });
 
+    test('shared strings: rich runs, phonetic runs, preserved spaces, entities, empty items', () {
+      final bytes = buildXlsx(
+        sharedStringsXml: '<si><t xml:space="preserve"> lead </t></si>'
+            '<si><r><t>Rich</t></r><r><rPr><b/></rPr><t> text</t></r></si>'
+            '<si><t>漢字</t><rPh sb="0" eb="2"><t>かんじ</t></rPh></si>'
+            '<si/>'
+            '<si><t>a &lt; b &amp; c &#233;</t></si>',
+        sheetXml: {
+          'S': '<row r="1">'
+              '<c r="A1" t="s"><v>0</v></c>'
+              '<c r="B1" t="s"><v>1</v></c>'
+              '<c r="C1" t="s"><v>2</v></c>'
+              '<c r="D1" t="s"><v>3</v></c>'
+              '<c r="E1" t="s"><v>4</v></c>'
+              '</row>',
+        },
+      );
+
+      final row = ExcelStreamReader.fromBytes(bytes).readSheet('S').single;
+
+      expect(row.cells.map((c) => c.value), [
+        TextCellValue(' lead '),
+        TextCellValue('Rich text'),
+        TextCellValue('漢字'),
+        TextCellValue(''),
+        TextCellValue('a < b & c é'),
+      ]);
+    });
+
+    test('readSheetAsync pauses before the first row', () async {
+      final bytes = buildXlsx(
+        sharedStringsXml: '<si><t>x</t></si>',
+        sheetXml: {'S': '<row r="1"><c r="A1" t="s"><v>0</v></c></row>'},
+      );
+      var pausesBeforeFirstRow = -1;
+      var pauses = 0;
+
+      await for (final _ in ExcelStreamReader.fromBytes(bytes).readSheetAsync('S', pause: () async => pauses++)) {
+        pausesBeforeFirstRow = pauses;
+      }
+
+      expect(pausesBeforeFirstRow, 2);
+    });
+
     test('places cells by their reference', () {
       final bytes = buildXlsx(
         sheetXml: {

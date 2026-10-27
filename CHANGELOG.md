@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-10-27
+### Changed
+- `ExcelStreamReader` loads the shared strings by scanning `<si>` items on the bytes instead of parsing the whole `sharedStrings.xml` into a DOM: a 10 MB table no longer costs a DOM of the whole part, and the time before the first row drops with it.
+- `readSheetAsync` awaits `pause` after inflating the sheet and after loading the shared strings, so a UI thread gets a frame before the first row.
+
 ## [1.1.0] - 2026-10-27
 ### Added
 - `ExcelStreamReader.readSheetAsync(sheet, {pause, sliceSize})`: the same rows as `readSheet` as a `Stream`, awaiting `pause` after every `sliceSize` bytes (64 KiB) so a UI thread can repaint while a large sheet is read.
