@@ -49,7 +49,7 @@ class _WindowOutputStream extends OutputStream {
   @override
   void writeStream(InputStream stream) => writeBytes(stream.toUint8List());
 
-  @override
+  /// An LZ77 back-reference from the inflater; copies within the window.
   void writeBackReference(int distance, int count) {
     _ensure(count);
     final src = _filled - distance;
@@ -119,7 +119,7 @@ Iterable<Uint8List> _sheetChunks(ArchiveFile file, {int minChunk = 256 * 1024}) 
       return;
     }
     final output = _WindowOutputStream();
-    final inflate = Inflate.lazy(input, output: output);
+    final inflate = _StreamInflate.lazy(input, output: output);
     final pending = BytesBuilder(copy: false);
     var more = true;
     while (more) {

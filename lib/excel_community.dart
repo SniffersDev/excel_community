@@ -76,6 +76,7 @@ part 'src/streaming/excel_stream_models.dart';
 part 'src/streaming/excel_stream_writer.dart';
 part 'src/streaming/zip_stream_writer.dart';
 part 'src/streaming/excel_sheet_chunks.dart';
+part 'src/streaming/zlib/stream_inflate.dart';
 part 'src/streaming/excel_stream_reader.dart';
 
 /// Sheet

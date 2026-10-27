@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.3.0] - 2026-10-27
 ### Changed
 - `ExcelStreamReader` reads a sheet in chunks: a deflated part is inflated block by block through a 32 KiB sliding window straight from the zip's raw bytes, and `<row>` elements are scanned from the chunks (a row that straddles a chunk is completed by the next one). A sheet is never held as a whole any more, so a 1 GB sheet reads in the memory of the zip plus one chunk; `rowCount` inflates the first chunk only. Stored parts read as before.
-- Requires `archive` 4.5.2 or later (`Inflate.lazy`, `OutputStream.writeBackReference`).
+- The block-by-block inflater is vendored from archive 4.5.2 (`_StreamInflate`), so any archive from 4.0.9 on works.
 
 ## [1.2.1] - 2026-10-27
 ### Fixed
