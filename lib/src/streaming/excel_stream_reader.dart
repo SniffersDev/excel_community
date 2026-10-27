@@ -4,7 +4,16 @@ part of excel_community;
 /// without loading the entire sheet into memory.
 ///
 /// Designed for large files (400k+ rows) in browser environments where
-/// the DOM-based [Excel.decodeBytes] would run out of memory.
+/// the DOM-based [Excel.decodeBytes] would run out of memory. A sheet is
+/// scanned on its decompressed bytes, one `<row>` at a time: only the row
+/// being read is ever decoded to a string, so memory is bounded by the
+/// sheet's bytes plus one row, whatever the sheet size.
+///
+/// Cell values follow the cell's type and style: shared, inline and formula
+/// strings become [TextCellValue], booleans [BoolCellValue], numbers
+/// [IntCellValue] / [DoubleCellValue], and numbers whose cell style is a date
+/// or time format become [DateCellValue], [DateTimeCellValue] or
+/// [TimeCellValue], the same way [Excel.decodeBytes] reads them.
 ///
 /// ```dart
 /// final reader = ExcelStreamReader.fromBytes(xlsxBytes);
@@ -14,11 +23,21 @@ part of excel_community;
 ///   print('Row ${row.index}: ${row.cells.length} cells');
 ///   // Process row — it is discarded when you move to the next
 /// }
+///
+/// // On a UI thread, let the event loop breathe between slices:
+/// await for (final row in reader.readSheetAsync('Sheet1', pause: yieldToUi)) { … }
 /// ```
 class ExcelStreamReader {
+  /// Bytes consumed between two [readSheetAsync] pauses.
+  static const int defaultSliceSize = 64 * 1024;
+
   final Archive _archive;
   final Map<String, String> _sheetTargets = {}; // name → xl/worksheets/sheetN.xml
   List<String>? _sharedStringsList;
+
+  /// Number format per `cellXfs` index, from `xl/styles.xml`; null when the
+  /// style has no (known) number format.
+  List<NumFormat?>? _xfFormats;
 
   ExcelStreamReader._(this._archive) {
     _parseWorkbook();
@@ -33,43 +52,61 @@ class ExcelStreamReader {
   /// Available sheet names in the workbook.
   List<String> get sheetNames => _sheetTargets.keys.toList();
 
+  /// The number of rows the sheet's `<dimension ref="A1:N279520"/>` declares,
+  /// header row included; null when the sheet carries no dimension. Cheap:
+  /// only the head of the sheet is looked at.
+  int? rowCount(String sheetName) {
+    final bytes = _sheetFile(sheetName).content;
+    final head = utf8.decoder.convert(bytes, 0, min(bytes.length, 4096));
+    final match =
+        RegExp(r'<dimension\s+ref="[A-Z]+(\d+)(?::[A-Z]+(\d+))?"').firstMatch(head);
+    if (match == null) return null;
+    return int.tryParse(match.group(2) ?? match.group(1)!);
+  }
+
   /// Read rows from a sheet as a lazy iterable.
   /// Each [ExcelRow] is yielded one at a time for memory efficiency.
   Iterable<ExcelRow> readSheet(String sheetName) sync* {
+    final file = _sheetFile(sheetName);
+    _loadSharedStrings();
+    for (final scanned in _scanRows(file.content)) {
+      yield scanned.row;
+    }
+  }
+
+  /// [readSheet] for a UI thread: the same rows, with [pause] awaited after
+  /// every [sliceSize] bytes of sheet data, so a progress dialog can repaint
+  /// between slices (`() => Future.delayed(Duration.zero)` is enough on the
+  /// web). Without [pause] it is a plain stream of the rows.
+  Stream<ExcelRow> readSheetAsync(
+    String sheetName, {
+    Future<void> Function()? pause,
+    int sliceSize = defaultSliceSize,
+  }) async* {
+    final file = _sheetFile(sheetName);
+    _loadSharedStrings();
+    var nextPause = sliceSize;
+    for (final scanned in _scanRows(file.content)) {
+      yield scanned.row;
+      if (pause != null && scanned.endOffset >= nextPause) {
+        nextPause = scanned.endOffset + sliceSize;
+        await pause();
+      }
+    }
+  }
+
+  ArchiveFile _sheetFile(String sheetName) {
     final target = _sheetTargets[sheetName];
     if (target == null) {
       throw ArgumentError('Sheet "$sheetName" not found. '
           'Available: ${sheetNames.join(', ')}');
     }
-
-    // Ensure shared strings are loaded
-    _loadSharedStrings();
-
-    // Extract worksheet XML
     final file = _archive.findFile(target);
     if (file == null) {
       throw StateError('Worksheet file "$target" not found in archive');
     }
     file.decompress();
-    final rawXml = utf8.decode(file.content);
-
-    // Find <sheetData> section
-    final sheetDataOpenIdx = rawXml.indexOf('<sheetData');
-    if (sheetDataOpenIdx == -1) return;
-
-    final afterOpen = rawXml.indexOf('>', sheetDataOpenIdx);
-    if (afterOpen == -1) return;
-
-    // Check self-closing <sheetData/>
-    if (rawXml[afterOpen - 1] == '/') return;
-
-    final sheetDataCloseIdx = rawXml.indexOf('</sheetData>', afterOpen);
-    if (sheetDataCloseIdx == -1) return;
-
-    final sheetDataContent = rawXml.substring(afterOpen + 1, sheetDataCloseIdx);
-
-    // Parse rows from the raw XML string
-    yield* _parseRows(sheetDataContent);
+    return file;
   }
 
   void _parseWorkbook() {
@@ -107,7 +144,40 @@ class ExcelStreamReader {
     }
   }
 
+  /// Number formats by `cellXfs` index, the way the DOM parser resolves them
+  /// (`_parseStyles`): custom `numFmt`s registered on a [NumFormatMaintainer]
+  /// that already knows the built-in ids, then one lookup per `xf`.
+  void _loadStyles() {
+    if (_xfFormats != null) return;
+    final formats = <NumFormat?>[];
+    _xfFormats = formats;
+
+    final stylesFile = _archive.findFile('xl/styles.xml');
+    if (stylesFile == null) return;
+    stylesFile.decompress();
+    final document = XmlDocument.parse(utf8.decode(stylesFile.content));
+
+    final maintainer = NumFormatMaintainer();
+    for (final numFmts in document.findAllElements('numFmts')) {
+      for (final node in numFmts.findAllElements('numFmt')) {
+        final numFmtId = int.tryParse(node.getAttribute('numFmtId') ?? '');
+        final formatCode = node.getAttribute('formatCode');
+        if (numFmtId == null || formatCode == null) continue;
+        if (numFmtId >= 164 && maintainer.getByNumFmtId(numFmtId) == null) {
+          maintainer.add(numFmtId, NumFormat.custom(formatCode: formatCode));
+        }
+      }
+    }
+    for (final cellXfs in document.findAllElements('cellXfs')) {
+      for (final xf in cellXfs.findAllElements('xf')) {
+        final numFmtId = int.tryParse(xf.getAttribute('numFmtId') ?? '0') ?? 0;
+        formats.add(maintainer.getByNumFmtId(numFmtId));
+      }
+    }
+  }
+
   void _loadSharedStrings() {
+    _loadStyles();
     if (_sharedStringsList != null) return;
     _sharedStringsList = [];
 
@@ -139,51 +209,84 @@ class ExcelStreamReader {
     }
   }
 
-  Iterable<ExcelRow> _parseRows(String content) sync* {
-    int pos = 0;
-    final len = content.length;
+  // ── Byte-level row scanning ──────────────────────────────────────
 
-    while (pos < len) {
-      final rowStart = content.indexOf('<row', pos);
-      if (rowStart == -1) break;
+  static final List<int> _rowOpen = utf8.encode('<row');
+  static final List<int> _rowClose = utf8.encode('</row>');
+  static final List<int> _sheetDataOpen = utf8.encode('<sheetData');
+  static final List<int> _sheetDataClose = utf8.encode('</sheetData>');
+  static const int _gt = 0x3E; // '>'
+  static const int _slash = 0x2F; // '/'
 
-      final rowTagEnd = content.indexOf('>', rowStart);
+  /// Walks the sheet's bytes `<row>` by `<row>`. The markup is ASCII, and a
+  /// UTF-8 multi-byte sequence never contains an ASCII byte, so searching
+  /// the bytes is safe; only one row at a time is decoded to a string.
+  /// [endOffset] is the byte offset just past the row, for pausing.
+  Iterable<({ExcelRow row, int endOffset})> _scanRows(List<int> bytes) sync* {
+    final sheetDataStart = _indexOf(bytes, _sheetDataOpen, 0);
+    if (sheetDataStart == -1) return;
+    final afterOpen = _indexOfByte(bytes, _gt, sheetDataStart);
+    if (afterOpen == -1) return;
+    if (bytes[afterOpen - 1] == _slash) return; // <sheetData/>
+    var end = _indexOf(bytes, _sheetDataClose, afterOpen);
+    if (end == -1) end = bytes.length;
+
+    var pos = afterOpen + 1;
+    while (pos < end) {
+      final rowStart = _indexOf(bytes, _rowOpen, pos);
+      if (rowStart == -1 || rowStart >= end) break;
+      final rowTagEnd = _indexOfByte(bytes, _gt, rowStart);
       if (rowTagEnd == -1) break;
 
-      final isSelfClosing = content[rowTagEnd - 1] == '/';
-      final rowTag = content.substring(rowStart, rowTagEnd + 1);
+      final isSelfClosing = bytes[rowTagEnd - 1] == _slash;
+      final rowTag = utf8.decoder.convert(bytes, rowStart, rowTagEnd + 1);
       final rowIndexStr = _extractAttrStream(rowTag, 'r');
 
       int rowEnd;
       String rowContent;
-
       if (isSelfClosing) {
         rowEnd = rowTagEnd + 1;
         rowContent = '';
       } else {
-        final closeIdx = content.indexOf('</row>', rowTagEnd);
+        final closeIdx = _indexOf(bytes, _rowClose, rowTagEnd);
         if (closeIdx == -1) break;
-        rowEnd = closeIdx + 6;
-        rowContent = content.substring(rowTagEnd + 1, closeIdx);
+        rowEnd = closeIdx + _rowClose.length;
+        rowContent = closeIdx > rowTagEnd + 1
+            ? utf8.decoder.convert(bytes, rowTagEnd + 1, closeIdx)
+            : '';
       }
-
-      if (rowIndexStr == null) {
-        pos = rowEnd;
-        continue;
-      }
-
-      final rowIdx = int.parse(rowIndexStr) - 1;
-
-      if (rowContent.isNotEmpty) {
-        final cells = _parseCells(rowContent);
-        yield ExcelRow(rowIdx, cells);
-      } else {
-        yield ExcelRow(rowIdx, const []);
-      }
-
       pos = rowEnd;
+
+      if (rowIndexStr == null) continue;
+      final rowIdx = int.parse(rowIndexStr) - 1;
+      final cells =
+          rowContent.isEmpty ? const <ExcelCell>[] : _parseCells(rowContent);
+      yield (row: ExcelRow(rowIdx, cells), endOffset: rowEnd);
     }
   }
+
+  static int _indexOf(List<int> bytes, List<int> needle, int from) {
+    final first = needle[0];
+    final last = bytes.length - needle.length;
+    for (var i = from; i <= last; i++) {
+      if (bytes[i] != first) continue;
+      var j = 1;
+      while (j < needle.length && bytes[i + j] == needle[j]) {
+        j++;
+      }
+      if (j == needle.length) return i;
+    }
+    return -1;
+  }
+
+  static int _indexOfByte(List<int> bytes, int byte, int from) {
+    for (var i = from; i < bytes.length; i++) {
+      if (bytes[i] == byte) return i;
+    }
+    return -1;
+  }
+
+  // ── Cell parsing ─────────────────────────────────────────────────
 
   List<ExcelCell> _parseCells(String content) {
     final cells = <ExcelCell>[];
@@ -232,6 +335,7 @@ class ExcelStreamReader {
       final coords = _cellCoordsFromCellId(rAttr);
       final columnIndex = coords.$2;
       final tAttr = _extractAttrStream(openingTag, 't');
+      final sAttr = _extractAttrStream(openingTag, 's');
 
       CellValue? value;
 
@@ -249,22 +353,23 @@ class ExcelStreamReader {
               }
             }
             break;
+          case 'str': // formula result as text
+            final vVal = _extractElementTextStream(childContent, 'v');
+            if (vVal != null) value = TextCellValue(_unescapeXml(vVal));
+            break;
+          case 'inlineStr':
+            value = TextCellValue(_inlineText(childContent));
+            break;
           case 'b': // boolean
             final vVal = _extractElementTextStream(childContent, 'v');
             value = BoolCellValue(vVal == '1');
             break;
-          default: // number
+          case 'e': // error
+            break;
+          default: // number, a date when the style says so
             final vVal = _extractElementTextStream(childContent, 'v');
             if (vVal != null) {
-              final intVal = int.tryParse(vVal);
-              if (intVal != null) {
-                value = IntCellValue(intVal);
-              } else {
-                final doubleVal = double.tryParse(vVal);
-                if (doubleVal != null) {
-                  value = DoubleCellValue(doubleVal);
-                }
-              }
+              value = _numericValue(vVal, sAttr);
             }
             break;
         }
@@ -278,6 +383,47 @@ class ExcelStreamReader {
     }
 
     return cells;
+  }
+
+  CellValue? _numericValue(String vVal, String? sAttr) {
+    final styleIndex = sAttr == null ? null : int.tryParse(sAttr);
+    final formats = _xfFormats;
+    if (styleIndex != null && formats != null && styleIndex < formats.length) {
+      final format = formats[styleIndex];
+      if (format is DateTimeNumFormat) {
+        return format.read(vVal);
+      }
+    }
+    final intVal = int.tryParse(vVal);
+    if (intVal != null) return IntCellValue(intVal);
+    final doubleVal = double.tryParse(vVal);
+    if (doubleVal != null) return DoubleCellValue(doubleVal);
+    return null;
+  }
+
+  /// The text of an `<is>` inline string: every `<t>` concatenated (rich
+  /// text has several runs), entities decoded.
+  static String _inlineText(String childContent) {
+    final buf = StringBuffer();
+    for (final match in RegExp(r'<t(?:\s[^>]*)?>(.*?)</t>', dotAll: true)
+        .allMatches(childContent)) {
+      buf.write(_unescapeXml(match.group(1)!));
+    }
+    return buf.toString();
+  }
+
+  static String _unescapeXml(String text) {
+    if (!text.contains('&')) return text;
+    return text
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&apos;', "'")
+        .replaceAllMapped(RegExp(r'&#x([0-9A-Fa-f]+);'),
+            (m) => String.fromCharCode(int.parse(m.group(1)!, radix: 16)))
+        .replaceAllMapped(RegExp(r'&#(\d+);'),
+            (m) => String.fromCharCode(int.parse(m.group(1)!)))
+        .replaceAll('&amp;', '&');
   }
 
   /// Extract an attribute value from an XML tag string.

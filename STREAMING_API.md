@@ -5,7 +5,7 @@ Unlike the DOM-based `Excel` class, it never builds the full spreadsheet in memo
 
 > [!NOTE]
 > The Streaming API supports **text**, **int**, **double**, **bool**, **date**, **time**, and **datetime** cell types, plus **cell styling** (fonts, fills, borders, alignment).  
-> It does **not** support charts, merged cells, or formulas.
+> It does **not** support charts, merged cells, or formulas (the reader returns a formula's cached result, never the formula).
 
 ---
 
@@ -144,6 +144,30 @@ for (final row in reader.readSheet('Sales')) {
 }
 ```
 
+The reader opens the zip once and scans a sheet on its decompressed bytes, one `<row>` at a time; only the row being read is decoded to a string. Memory is bounded by the sheet's compressed-then-inflated bytes plus one row, whatever the row count (a 257 MB sheet of 279,526 rows reads in about 15 s inside a 1 GB heap on the Dart VM).
+
+### Reading on a UI thread
+
+`readSheet` is synchronous: a large sheet blocks the thread until it is done. In a browser (or any UI isolate) use `readSheetAsync`, which yields the same rows as a `Stream` and awaits `pause` after every `sliceSize` bytes (64 KiB by default), so a progress dialog can repaint:
+
+```dart
+final total = reader.rowCount('Measurements'); // from <dimension>, null when absent
+var read = 0;
+await for (final row in reader.readSheetAsync(
+  'Measurements',
+  pause: () => Future<void>.delayed(Duration.zero), // let the event loop run
+)) {
+  read++;
+  if (read % 1000 == 0) showProgress(read, total);
+}
+```
+
+Inside a Web Worker or an isolate, call it without `pause`.
+
+### Cell types and dates
+
+Shared strings, inline strings (`t="inlineStr"`, rich-text runs concatenated) and formula string results (`t="str"`) come back as `TextCellValue`; booleans as `BoolCellValue`; numbers as `IntCellValue` or `DoubleCellValue`. A numeric cell whose **cell style** is a date or time number format (the built-in ids 14–22 and 45–47, or a custom format code such as `dd/mm/yyyy`) is read as `DateCellValue`, `DateTimeCellValue` (when the serial has a time fraction) or `TimeCellValue` (serials below 1), exactly as `Excel.decodeBytes` reads it. Error cells (`t="e"`) are skipped.
+
 ### Accessing cell values
 
 Each `ExcelRow` contains a list of `ExcelCell` objects with a `columnIndex` and a `value`:
@@ -175,6 +199,8 @@ for (final row in reader.readSheet('Data')) {
     print('Double: $value');
   } else if (value is BoolCellValue) {
     print('Bool: $value');
+  } else if (value is DateCellValue || value is DateTimeCellValue) {
+    print('Date: $value'); // a date-styled numeric cell
   }
 }
 ```
@@ -238,7 +264,9 @@ print(rows[0].cells[0].value); // world
 |---|---|
 | `ExcelStreamReader.fromBytes(List<int> bytes)` | Create a reader from XLSX bytes. |
 | `sheetNames` | `List<String>` of available sheet names. |
+| `rowCount(String name)` | Row count from the sheet's `<dimension>` (header included), or `null`. Cheap. |
 | `readSheet(String name)` | Returns a lazy `Iterable<ExcelRow>` — rows are parsed on demand. |
+| `readSheetAsync(String name, {Future<void> Function()? pause, int sliceSize})` | The same rows as a `Stream<ExcelRow>`; awaits `pause` every `sliceSize` bytes (default 64 KiB) so a UI thread can repaint. |
 
 ### `ExcelRow`
 

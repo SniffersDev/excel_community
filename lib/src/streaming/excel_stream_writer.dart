@@ -452,7 +452,7 @@ class ExcelStreamWriter {
       if (hasAlignment) {
         buf.write('><alignment');
         buf.write(
-            ' horizontal="${style!.horizontalAlignment.toString().split('.').last.toLowerCase()}"');
+            ' horizontal="${style.horizontalAlignment.toString().split('.').last.toLowerCase()}"');
         buf.write(
             ' vertical="${style.verticalAlignment.toString().split('.').last.toLowerCase()}"');
         if (style.wrap == TextWrapping.WrapText) {
