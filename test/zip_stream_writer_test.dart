@@ -19,8 +19,7 @@ class _MemorySink implements ByteSink {
 
 /// Counts the bytes and keeps only the last [keep] of them.
 class _TailSink implements ByteSink {
-  _TailSink({this.keep = 4096});
-  final int keep;
+  static const int keep = 4096;
   int count = 0;
   Uint8List tail = Uint8List(0);
   @override

@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-10-27
+### Changed
+- `ExcelStreamReader` reads a sheet in chunks: a deflated part is inflated block by block through a 32 KiB sliding window straight from the zip's raw bytes, and `<row>` elements are scanned from the chunks (a row that straddles a chunk is completed by the next one). A sheet is never held as a whole any more, so a 1 GB sheet reads in the memory of the zip plus one chunk; `rowCount` inflates the first chunk only. Stored parts read as before.
+- Requires `archive` 4.5.2 or later (`Inflate.lazy`, `OutputStream.writeBackReference`).
+
 ## [1.2.1] - 2026-10-27
 ### Fixed
 - `ZipStreamWriter` handed out deflated chunks as views of the deflater's buffer, which the next chunk overwrote; a sink that forwards bytes to an asynchronous consumer (a download) got corrupt entries for any sheet written in more than one chunk. The chunks are now owned copies.

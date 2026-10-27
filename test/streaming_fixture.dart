@@ -11,10 +11,12 @@ Uint8List buildXlsx({
   String? sharedStringsXml,
   String? stylesXml,
   Map<String, String> dimension = const {},
+  bool storeSheets = false,
 }) {
   final archive = Archive();
-  void add(String path, String content) =>
-      archive.addFile(ArchiveFile.string(path, content));
+  void add(String path, String content, {bool store = false}) => archive.addFile(
+      ArchiveFile.string(path, content)
+        ..compression = store ? CompressionType.none : CompressionType.deflate);
 
   final names = sheetXml.keys.toList();
   add(
@@ -54,6 +56,7 @@ Uint8List buildXlsx({
     final dim = dimension[entry.value];
     add(
       'xl/worksheets/sheet${entry.key + 1}.xml',
+      store: storeSheets,
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
       '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
       '${dim == null ? '' : '<dimension ref="$dim"/>'}'

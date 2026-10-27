@@ -56,7 +56,13 @@ class ExcelStreamReader {
   /// header row included; null when the sheet carries no dimension. Cheap:
   /// only the head of the sheet is looked at.
   int? rowCount(String sheetName) {
-    final bytes = _sheetFile(sheetName).content;
+    final file = _sheetFile(sheetName);
+    // The first chunk only: a deflated sheet is inflated up to there.
+    Uint8List bytes = Uint8List(0);
+    for (final chunk in _sheetChunks(file, minChunk: 4096)) {
+      bytes = chunk;
+      break;
+    }
     final head = utf8.decoder.convert(bytes, 0, min(bytes.length, 4096));
     final match =
         RegExp(r'<dimension\s+ref="[A-Z]+(\d+)(?::[A-Z]+(\d+))?"').firstMatch(head);
@@ -69,8 +75,12 @@ class ExcelStreamReader {
   Iterable<ExcelRow> readSheet(String sheetName) sync* {
     final file = _sheetFile(sheetName);
     _loadSharedStrings();
-    for (final scanned in _scanRows(file.content)) {
-      yield scanned.row;
+    final scanner = _RowScanner(_parseCells);
+    for (final chunk in _sheetChunks(file)) {
+      for (final scanned in scanner.feed(chunk)) {
+        yield scanned.row;
+      }
+      if (scanner.isDone) break;
     }
   }
 
@@ -83,20 +93,25 @@ class ExcelStreamReader {
     Future<void> Function()? pause,
     int sliceSize = defaultSliceSize,
   }) async* {
-    // Inflating the sheet and loading the shared strings are the two
+    // Opening the sheet and loading the shared strings are the two
     // synchronous blocks before the first row; give the caller a turn after
-    // each so a progress dialog can paint.
+    // each so a progress dialog can paint. The sheet is inflated chunk by
+    // chunk as the rows are read, never as a whole.
     final file = _sheetFile(sheetName);
     if (pause != null) await pause();
     _loadSharedStrings();
     if (pause != null) await pause();
     var nextPause = sliceSize;
-    for (final scanned in _scanRows(file.content)) {
-      yield scanned.row;
-      if (pause != null && scanned.endOffset >= nextPause) {
-        nextPause = scanned.endOffset + sliceSize;
-        await pause();
+    final scanner = _RowScanner(_parseCells);
+    for (final chunk in _sheetChunks(file)) {
+      for (final scanned in scanner.feed(chunk)) {
+        yield scanned.row;
+        if (pause != null && scanned.endOffset >= nextPause) {
+          nextPause = scanned.endOffset + sliceSize;
+          await pause();
+        }
       }
+      if (scanner.isDone) break;
     }
   }
 
@@ -110,7 +125,6 @@ class ExcelStreamReader {
     if (file == null) {
       throw StateError('Worksheet file "$target" not found in archive');
     }
-    file.decompress();
     return file;
   }
 
@@ -242,53 +256,6 @@ class ExcelStreamReader {
   static final List<int> _sheetDataClose = utf8.encode('</sheetData>');
   static const int _gt = 0x3E; // '>'
   static const int _slash = 0x2F; // '/'
-
-  /// Walks the sheet's bytes `<row>` by `<row>`. The markup is ASCII, and a
-  /// UTF-8 multi-byte sequence never contains an ASCII byte, so searching
-  /// the bytes is safe; only one row at a time is decoded to a string.
-  /// [endOffset] is the byte offset just past the row, for pausing.
-  Iterable<({ExcelRow row, int endOffset})> _scanRows(List<int> bytes) sync* {
-    final sheetDataStart = _indexOf(bytes, _sheetDataOpen, 0);
-    if (sheetDataStart == -1) return;
-    final afterOpen = _indexOfByte(bytes, _gt, sheetDataStart);
-    if (afterOpen == -1) return;
-    if (bytes[afterOpen - 1] == _slash) return; // <sheetData/>
-    var end = _indexOf(bytes, _sheetDataClose, afterOpen);
-    if (end == -1) end = bytes.length;
-
-    var pos = afterOpen + 1;
-    while (pos < end) {
-      final rowStart = _indexOf(bytes, _rowOpen, pos);
-      if (rowStart == -1 || rowStart >= end) break;
-      final rowTagEnd = _indexOfByte(bytes, _gt, rowStart);
-      if (rowTagEnd == -1) break;
-
-      final isSelfClosing = bytes[rowTagEnd - 1] == _slash;
-      final rowTag = utf8.decoder.convert(bytes, rowStart, rowTagEnd + 1);
-      final rowIndexStr = _extractAttrStream(rowTag, 'r');
-
-      int rowEnd;
-      String rowContent;
-      if (isSelfClosing) {
-        rowEnd = rowTagEnd + 1;
-        rowContent = '';
-      } else {
-        final closeIdx = _indexOf(bytes, _rowClose, rowTagEnd);
-        if (closeIdx == -1) break;
-        rowEnd = closeIdx + _rowClose.length;
-        rowContent = closeIdx > rowTagEnd + 1
-            ? utf8.decoder.convert(bytes, rowTagEnd + 1, closeIdx)
-            : '';
-      }
-      pos = rowEnd;
-
-      if (rowIndexStr == null) continue;
-      final rowIdx = int.parse(rowIndexStr) - 1;
-      final cells =
-          rowContent.isEmpty ? const <ExcelCell>[] : _parseCells(rowContent);
-      yield (row: ExcelRow(rowIdx, cells), endOffset: rowEnd);
-    }
-  }
 
   static int _indexOf(List<int> bytes, List<int> needle, int from) {
     final first = needle[0];
