@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-10-27
+### Fixed
+- `ZipStreamWriter` handed out deflated chunks as views of the deflater's buffer, which the next chunk overwrote; a sink that forwards bytes to an asynchronous consumer (a download) got corrupt entries for any sheet written in more than one chunk. The chunks are now owned copies.
+
 ## [1.2.0] - 2026-10-27
 ### Added
 - `ZipStreamWriter`: writes a zip to a `ByteSink` entry by entry while the content is produced (data descriptors, stored or deflated entries, zip64 when an entry or the archive passes 4 GiB, `abandonEntry` for a content stream that fails halfway).

@@ -58,7 +58,10 @@ class StreamDeflate {
   /// minimize memory usage.
   Uint8List takeBytes() {
     _flushPending();
-    final bytes = _output.getBytes();
+    // getBytes() is a view of the output buffer, which the next deflate
+    // call overwrites; whoever keeps these bytes (a sink that hands them to
+    // an asynchronous consumer) needs its own copy.
+    final bytes = Uint8List.fromList(_output.getBytes());
     _output.clear();
     return bytes;
   }

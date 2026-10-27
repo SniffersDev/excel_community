@@ -11,7 +11,7 @@ import 'package:test/test.dart';
 // back through ExcelStreamReader and opens as a normal xlsx.
 
 class _MemorySink implements ByteSink {
-  final BytesBuilder builder = BytesBuilder(copy: true);
+  final BytesBuilder builder = BytesBuilder(copy: false);
   int adds = 0;
   @override
   void add(Uint8List bytes) {

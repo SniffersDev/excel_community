@@ -11,7 +11,7 @@ import 'package:test/test.dart';
 // zip64 when an entry passes 4 GiB.
 
 class _MemorySink implements ByteSink {
-  final BytesBuilder builder = BytesBuilder(copy: true);
+  final BytesBuilder builder = BytesBuilder(copy: false);
   @override
   void add(Uint8List bytes) => builder.add(bytes);
   Uint8List get bytes => builder.toBytes();
