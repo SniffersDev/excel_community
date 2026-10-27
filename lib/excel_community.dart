@@ -4,8 +4,10 @@
 library excel_community;
 
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:math';
 import 'package:archive/archive.dart';
+import 'src/streaming/zlib/stream_deflate.dart';
 import 'package:collection/collection.dart';
 import 'package:equatable/equatable.dart';
 import 'package:xml/xml.dart';
@@ -72,6 +74,7 @@ part 'src/parser/parse.dart';
 /// Streaming API
 part 'src/streaming/excel_stream_models.dart';
 part 'src/streaming/excel_stream_writer.dart';
+part 'src/streaming/zip_stream_writer.dart';
 part 'src/streaming/excel_stream_reader.dart';
 
 /// Sheet

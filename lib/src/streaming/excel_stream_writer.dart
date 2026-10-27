@@ -34,6 +34,24 @@ class ExcelStreamWriter {
 
   bool _encoded = false;
 
+  // ── Streamed mode (ExcelStreamWriter.streamed) ────────────────────
+  // Sheets go into [_zip] entry by entry as rows arrive; nothing of a
+  // finished sheet stays in memory.
+  final ZipStreamWriter? _zip;
+  final bool _inlineStrings;
+
+  /// Rows kept in the sheet buffer before they are flushed to the zip.
+  final int flushRows;
+  static const int _flushBytes = 1 << 20;
+  int _rowsSinceFlush = 0;
+  bool _finished = false;
+
+  static const String _worksheetPrefix =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+      '<sheetData>';
+  static const String _worksheetSuffix = '</sheetData></worksheet>';
+
   // ── Style registries ──────────────────────────────────────────────
   // Index 0 in each list is the default (unstyled) entry.
 
@@ -69,16 +87,85 @@ class ExcelStreamWriter {
   final Map<CellStyle, int> _styleToXfId = {};
 
   /// Create a new streaming writer. The first sheet is created automatically.
-  ExcelStreamWriter({String sheetName = 'Sheet1'}) {
+  ExcelStreamWriter({String sheetName = 'Sheet1'})
+      : _zip = null,
+        _inlineStrings = false,
+        flushRows = 0 {
     _activeSheet = _StreamSheet(sheetName);
     _sheets.add(_activeSheet);
   }
 
+  /// A writer that streams the workbook into [zip] while rows arrive: every
+  /// [flushRows] rows (or 1 MiB of XML) the sheet buffer is written into the
+  /// sheet's zip entry and dropped, so a sheet of any length costs the memory
+  /// of its pending rows only. With [inlineStrings] text cells are written in
+  /// place (`t="inlineStr"`), so no string table grows with the rows; the
+  /// shared strings part is then empty. [finish] closes the last sheet and
+  /// writes the workbook parts; the caller finishes [zip]. [encode] is not
+  /// available in this mode.
+  ExcelStreamWriter.streamed(
+    ZipStreamWriter zip, {
+    String sheetName = 'Sheet1',
+    bool inlineStrings = true,
+    this.flushRows = 2000,
+  })  : _zip = zip,
+        _inlineStrings = inlineStrings {
+    _activeSheet = _StreamSheet(sheetName);
+    _sheets.add(_activeSheet);
+    _openSheetEntry();
+  }
+
+  bool get _streamed => _zip != null;
+
+  void _openSheetEntry() {
+    _zip!.beginEntry('xl/worksheets/sheet${_sheets.length}.xml', large: true);
+    _activeSheet.buffer.write(_worksheetPrefix);
+  }
+
+  void _flushSheet() {
+    final buffer = _activeSheet.buffer;
+    if (buffer.isEmpty) return;
+    _zip!.write(utf8.encoder.convert(buffer.toString()));
+    buffer.clear();
+    _rowsSinceFlush = 0;
+  }
+
+  void _closeSheetEntry() {
+    _activeSheet.buffer.write(_worksheetSuffix);
+    _flushSheet();
+    _zip!.endEntry();
+  }
+
+  /// Streamed mode only: closes the last sheet and writes the workbook
+  /// parts into the zip. Nothing can be added afterwards.
+  void finish() {
+    final zip = _zip;
+    if (zip == null) throw StateError('finish() is for ExcelStreamWriter.streamed; use encode()');
+    if (_finished) throw StateError('finish() can only be called once');
+    _finished = true;
+    _closeSheetEntry();
+    void part(String name, String content) =>
+        zip.addEntry(name, utf8.encoder.convert(content), method: ZipEntryMethod.deflate);
+    part('xl/workbook.xml', _buildWorkbook());
+    part('xl/_rels/workbook.xml.rels', _buildWorkbookRels());
+    part('xl/styles.xml', _buildStyles());
+    part('xl/sharedStrings.xml', _buildSharedStrings());
+    part('_rels/.rels', _buildRootRels());
+    part('[Content_Types].xml', _buildContentTypes());
+  }
+
+  void _checkWritable() {
+    if (_encoded) throw StateError('Cannot add rows after encode()');
+    if (_finished) throw StateError('Cannot add rows after finish()');
+  }
+
   /// Add a new sheet and make it the active target for [addRow].
   ExcelStreamWriter addSheet(String name) {
-    if (_encoded) throw StateError('Cannot add sheets after encode()');
+    _checkWritable();
+    if (_streamed) _closeSheetEntry();
     _activeSheet = _StreamSheet(name);
     _sheets.add(_activeSheet);
+    if (_streamed) _openSheetEntry();
     return this;
   }
 
@@ -99,7 +186,7 @@ class ExcelStreamWriter {
   /// [styles] is an optional parallel list of [CellStyle] for each cell.
   /// Pass `null` for unstyled cells within the list.
   void addRow(List<CellValue?> values, {List<CellStyle?>? styles}) {
-    if (_encoded) throw StateError('Cannot add rows after encode()');
+    _checkWritable();
 
     final rowIndex = _activeSheet.rowCount;
     final buffer = _activeSheet.buffer;
@@ -118,6 +205,9 @@ class ExcelStreamWriter {
 
     buffer.write('</row>');
     _activeSheet.rowCount++;
+    if (_streamed && (++_rowsSinceFlush >= flushRows || buffer.length >= _flushBytes)) {
+      _flushSheet();
+    }
   }
 
   // ── Cell writing ─────────────────────────────────────────────────
@@ -132,7 +222,7 @@ class ExcelStreamWriter {
     buffer.write('"');
 
     if (value is TextCellValue) {
-      buffer.write(' t="s"');
+      buffer.write(_inlineStrings ? ' t="inlineStr"' : ' t="s"');
     } else if (value is BoolCellValue) {
       buffer.write(' t="b"');
     }
@@ -143,6 +233,13 @@ class ExcelStreamWriter {
       buffer.write(' s="');
       buffer.write(xfId);
       buffer.write('"');
+    }
+
+    if (_inlineStrings && value is TextCellValue) {
+      buffer.write('><is><t xml:space="preserve">');
+      buffer.write(_escapeXmlStream(value.toString()));
+      buffer.write('</t></is></c>');
+      return;
     }
 
     buffer.write('><v>');
@@ -251,6 +348,7 @@ class ExcelStreamWriter {
 
   /// Encode all sheets into XLSX bytes.
   List<int> encode() {
+    if (_streamed) throw StateError('encode() is not available for ExcelStreamWriter.streamed; use finish()');
     if (_encoded) throw StateError('encode() can only be called once');
     _encoded = true;
 
@@ -512,12 +610,9 @@ class ExcelStreamWriter {
 
   String _buildWorksheet(_StreamSheet sheet) {
     final buf = StringBuffer();
-    buf.write('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>');
-    buf.write('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">');
-    buf.write('<sheetData>');
+    buf.write(_worksheetPrefix);
     buf.write(sheet.buffer);
-    buf.write('</sheetData>');
-    buf.write('</worksheet>');
+    buf.write(_worksheetSuffix);
     return buf.toString();
   }
 

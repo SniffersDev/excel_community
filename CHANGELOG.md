@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-27
+### Added
+- `ZipStreamWriter`: writes a zip to a `ByteSink` entry by entry while the content is produced (data descriptors, stored or deflated entries, zip64 when an entry or the archive passes 4 GiB, `abandonEntry` for a content stream that fails halfway).
+- `ExcelStreamWriter.streamed(zip)`: writes each sheet into a `ZipStreamWriter` as rows arrive (every `flushRows` rows or 1 MiB), text cells inline (`inlineStrings`, default on) so no string table grows with the rows, and `finish()` writes the workbook parts last. A workbook of any size costs the memory of its pending rows.
+- `StreamDeflate` (internal): the archive package's deflate with chunked input (`addBytes` keeps the stream open, `finish()` closes it); the package's own `Deflate.addBytes` ends the stream on every call.
+
 ## [1.1.1] - 2026-10-27
 ### Changed
 - `ExcelStreamReader` loads the shared strings by scanning `<si>` items on the bytes instead of parsing the whole `sharedStrings.xml` into a DOM: a 10 MB table no longer costs a DOM of the whole part, and the time before the first row drops with it.
