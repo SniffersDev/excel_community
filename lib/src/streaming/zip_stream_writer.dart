@@ -169,6 +169,33 @@ class ZipStreamWriter {
     endEntry();
   }
 
+  /// Writes an entry whose data is already as a zip holds it: [raw] is the
+  /// stored or deflated content of another archive's entry, copied byte for
+  /// byte without inflating it; [crc32] and [uncompressedSize] are that
+  /// entry's.
+  void addRawEntry(
+    String name,
+    Uint8List raw, {
+    required ZipEntryMethod method,
+    required int crc32,
+    required int uncompressedSize,
+    DateTime? modified,
+  }) {
+    beginEntry(
+      name,
+      method: method,
+      modified: modified,
+      large: raw.length > _max32 || uncompressedSize > _max32,
+    );
+    // The data is written as it is: no deflater.
+    _deflate = null;
+    _open!
+      ..crc32 = crc32
+      ..uncompressedSize = uncompressedSize;
+    _emit(raw);
+    endEntry();
+  }
+
   /// Writes an empty directory entry.
   void addDirectory(String name, {DateTime? modified}) {
     _checkOpen(false);

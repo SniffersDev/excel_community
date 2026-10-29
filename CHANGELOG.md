@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-10-29
+### Added
+- `XlsxCellPatcher`: copies a workbook (`writeWorkbook`) or a zip of workbooks (`writePackage`) with a few cells rewritten. Every entry is copied byte for byte (its stored or deflated data, CRC and time) except the XML of a patched sheet; in that sheet only the patched rows are decoded and only the patched cells change, each to an inline string that keeps its `s` style (a missing cell is inserted in column order). Shared strings, styles, `workbook.xml` and the content types are untouched. The sheet streams chunk by chunk, with an optional `pause` between chunks. A cell with a formula is never rewritten (it may be the master of a shared formula, and `calcChain.xml` names it). The patches left out come back as `XlsxMissedPatch` with an `XlsxPatchMissReason` (`noSheet`, `noRow`, `formula`). A `<row>` or `<c>` without `r` is numbered after the one before it.
+- `ZipStreamWriter.addRawEntry`: writes an entry from another archive's stored or deflated bytes without inflating them.
+
 ## [1.3.1] - 2026-10-29
 ### Fixed
 - `ExcelStreamReader` threw `FormatException: Invalid deflate data` on a valid sheet whose deflate stream ends in a code shorter than the stream's longest one (seen on Excel-written workbooks): the vendored block inflater looked ahead for the longest code, met the end of the input and failed after decoding the whole sheet. It now decodes a last code from the bits that are left, and still fails on data that ends inside a code.
