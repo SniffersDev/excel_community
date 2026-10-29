@@ -4,9 +4,13 @@ part of excel_community;
 // _huffman_table.dart (MIT, Copyright (c) 2013-2021 Brendan Duncan), so the
 // block-by-block API (`_StreamInflate.lazy` + `inflateBlock`) is available
 // whatever archive version the host app resolves (the platform is pinned
-// below 4.1 by another dependency). One change: the back-reference goes to
+// below 4.1 by another dependency). Two changes: the back-reference goes to
 // `_WindowOutputStream` directly, whose sliding window keeps a sheet of any
-// size out of memory. Remove once every host is on archive 4.5.2 or later.
+// size out of memory; and `_readCodeByTable` decodes a last code that ends
+// less than the table's longest code before the end of the input, where
+// archive returns -1 (its `Inflate` ignores that failure on the final block,
+// `inflateBlock` throws on it). Remove once every host is on an archive
+// whose block API decodes such a stream.
 //
 // ignore_for_file: type=lint, unused_element
 
@@ -214,10 +218,13 @@ class _StreamInflate {
     final codeTable = table.table;
     final maxCodeLength = table.maxCodeLength;
 
-    // Not enough buffer
+    // Not enough buffer. The input may end before maxCodeLength bits are
+    // buffered: the stream's last code (the final end of block) is often
+    // shorter than the table's longest, and all of its bits are there. The
+    // missing high bits read as zero, and the code's own length decides below
     while (_bitBufferLen < maxCodeLength) {
       if (_inputStream!.isEOS) {
-        return -1;
+        break;
       }
 
       final octet = _inputStream!.readByte();
@@ -230,8 +237,9 @@ class _StreamInflate {
     final codeWithLength = codeTable[_bitBuffer & ((1 << maxCodeLength) - 1)];
     final codeLength = codeWithLength >> 16;
     // An entry no code was assigned to: the code is incomplete, which is
-    // damage. Consuming no bits, it would otherwise be read again forever
-    if (codeLength == 0) {
+    // damage. Consuming no bits, it would otherwise be read again forever.
+    // A code longer than the bits left: the data ends early
+    if (codeLength == 0 || codeLength > _bitBufferLen) {
       return -1;
     }
 

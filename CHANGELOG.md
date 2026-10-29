@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-10-29
+### Fixed
+- `ExcelStreamReader` threw `FormatException: Invalid deflate data` on a valid sheet whose deflate stream ends in a code shorter than the stream's longest one (seen on Excel-written workbooks): the vendored block inflater looked ahead for the longest code, met the end of the input and failed after decoding the whole sheet. It now decodes a last code from the bits that are left, and still fails on data that ends inside a code.
+
 ## [1.3.0] - 2026-10-27
 ### Changed
 - `ExcelStreamReader` reads a sheet in chunks: a deflated part is inflated block by block through a 32 KiB sliding window straight from the zip's raw bytes, and `<row>` elements are scanned from the chunks (a row that straddles a chunk is completed by the next one). A sheet is never held as a whole any more, so a 1 GB sheet reads in the memory of the zip plus one chunk; `rowCount` inflates the first chunk only. Stored parts read as before.
