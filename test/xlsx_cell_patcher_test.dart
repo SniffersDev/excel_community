@@ -85,6 +85,29 @@ void main() {
     expect(decoded['Units'].cell(CellIndex.indexByString('B3')).value.toString(), 'NL & <B>');
   });
 
+  // Excel asks to repair a workbook whose parts announce zip64 when they do
+  // not need it.
+  test('the patched sheet is not written as zip64', () async {
+    final sink = _MemorySink();
+
+    await XlsxCellPatcher.writeWorkbook(_workbook(), sink, const [
+      XlsxCellPatch(sheet: 'Units', row: 2, column: 1, text: 'NL'),
+    ]);
+
+    final bytes = sink.bytes;
+    final data = ByteData.sublistView(bytes);
+    for (final file in _unzip(bytes).files) {
+      final at = (file.rawContent as ZipFile).header!.localHeaderOffset;
+      final nameLength = data.getUint16(at + 26, Endian.little);
+      final extraLength = data.getUint16(at + 28, Endian.little);
+      var extraAt = at + 30 + nameLength;
+      while (extraAt + 4 <= at + 30 + nameLength + extraLength) {
+        expect(data.getUint16(extraAt, Endian.little), isNot(0x0001), reason: file.name);
+        extraAt += 4 + data.getUint16(extraAt + 2, Endian.little);
+      }
+    }
+  });
+
   test('a missing cell is inserted in column order; an empty patch empties the cell', () async {
     final sink = _MemorySink();
 

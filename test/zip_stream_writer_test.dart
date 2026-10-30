@@ -134,6 +134,51 @@ void main() {
     expect(sink.count, greaterThan(total));
   }, timeout: const Timeout(Duration(minutes: 5)));
 
+  // Excel refuses a package ("We found a problem with some content") whose
+  // central directory record disagrees with the local header: a large entry
+  // announces zip64 in its local header, so its central record must too.
+  test('a small large entry carries zip64 sizes in its central record', () {
+    final sink = _MemorySink();
+    final zip = ZipStreamWriter(sink);
+    final content = _text(List.generate(500, (i) => '<row r="$i"/>').join());
+    zip.beginEntry('xl/worksheets/sheet1.xml', large: true);
+    zip.write(content);
+    zip.endEntry();
+    zip.finish();
+
+    final bytes = sink.bytes;
+    final data = ByteData.sublistView(bytes);
+    // The local header announces zip64.
+    expect(data.getUint32(0, Endian.little), 0x04034b50);
+    expect(data.getUint16(28, Endian.little), 20, reason: 'local zip64 extra');
+    var at = -1;
+    for (var i = 0; i + 4 <= bytes.length; i++) {
+      if (data.getUint32(i, Endian.little) == 0x02014b50) {
+        at = i;
+        break;
+      }
+    }
+    expect(at, greaterThanOrEqualTo(0));
+    expect(data.getUint16(at + 6, Endian.little), 45, reason: 'version needed');
+    expect(data.getUint32(at + 20, Endian.little), 0xFFFFFFFF, reason: 'compressed size marker');
+    expect(data.getUint32(at + 24, Endian.little), 0xFFFFFFFF, reason: 'uncompressed size marker');
+    final nameLength = data.getUint16(at + 28, Endian.little);
+    final extraLength = data.getUint16(at + 30, Endian.little);
+    final extraAt = at + 46 + nameLength;
+    expect(extraLength, 20);
+    expect(data.getUint16(extraAt, Endian.little), 0x0001);
+    expect(data.getUint16(extraAt + 2, Endian.little), 16);
+    expect(data.getUint64(extraAt + 4, Endian.little), content.length, reason: 'uncompressed');
+    final compressed = data.getUint64(extraAt + 12, Endian.little);
+    expect(compressed, greaterThan(0));
+    expect(compressed, lessThan(content.length));
+    // The offset fits in 32 bits, so it stays in the record.
+    expect(data.getUint32(at + 42, Endian.little), 0);
+
+    final archive = ZipDecoder().decodeBytes(bytes, verify: true);
+    expect(archive.single.content, content);
+  });
+
   test('an entry that passes 4 GiB without large is refused', () {
     final zip = ZipStreamWriter(_TailSink());
     zip.beginEntry('huge.bin', method: ZipEntryMethod.stored);

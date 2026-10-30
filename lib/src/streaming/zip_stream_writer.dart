@@ -15,13 +15,15 @@ enum ZipEntryMethod { stored, deflate }
 /// (its CRC and sizes follow the content), so the writer needs neither size
 /// nor checksum up front; the central directory written by [finish] carries
 /// the real values. An entry that may grow past 4 GiB is opened with
-/// `large: true`, which reserves zip64 sizes in its local header; the central
-/// directory and the end record switch to zip64 on their own when a size, an
-/// offset or the entry count overflows.
+/// `large: true`, which reserves zip64 sizes in its local header and keeps
+/// them in its central record; the central directory and the end record
+/// switch to zip64 on their own when a size, an offset or the entry count
+/// overflows. Excel asks to repair a workbook whose parts are large, so the
+/// parts of an xlsx are never opened with `large: true`.
 ///
 /// ```dart
 /// final zip = ZipStreamWriter(sink);
-/// zip.beginEntry('xl/worksheets/sheet1.xml', large: true);
+/// zip.beginEntry('xl/worksheets/sheet1.xml');
 /// zip.write(chunk); // as often as needed
 /// zip.endEntry();
 /// zip.addEntry('[Content_Types].xml', utf8.encode(types));
@@ -298,7 +300,9 @@ class ZipStreamWriter {
 
   void _writeCentralEntry(_ZipStreamEntry entry) {
     final name = utf8.encode(entry.name);
-    final sizeOverflow = entry.uncompressedSize > _max32 || entry.compressedSize > _max32;
+    // A large entry announced zip64 sizes in its local header; Excel refuses
+    // a package whose central record then disagrees, so it keeps them here.
+    final sizeOverflow = entry.large || entry.uncompressedSize > _max32 || entry.compressedSize > _max32;
     final offsetOverflow = entry.offset > _max32;
     final extra = _ByteWriter();
     if (sizeOverflow || offsetOverflow) {

@@ -173,7 +173,9 @@ class XlsxCellPatcher {
       if (rows == null) {
         copyEntry(zip, file);
       } else {
-        zip.beginEntry(file.name, modified: file.lastModDateTime, large: true);
+        // Not large: Excel asks to repair a workbook whose parts announce
+        // zip64 without needing it.
+        zip.beginEntry(file.name, modified: file.lastModDateTime);
         final patcher = _SheetPatcher(rows);
         for (final chunk in _sheetChunks(file)) {
           zip.write(patcher.feed(chunk));

@@ -118,7 +118,9 @@ class ExcelStreamWriter {
   bool get _streamed => _zip != null;
 
   void _openSheetEntry() {
-    _zip!.beginEntry('xl/worksheets/sheet${_sheets.length}.xml', large: true);
+    // Not large: Excel asks to repair a workbook whose parts announce zip64
+    // without needing it, and a sheet Excel can open stays far below 4 GiB.
+    _zip!.beginEntry('xl/worksheets/sheet${_sheets.length}.xml');
     _activeSheet.buffer.write(_worksheetPrefix);
   }
 

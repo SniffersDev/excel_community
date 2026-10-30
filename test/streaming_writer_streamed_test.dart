@@ -31,7 +31,43 @@ List<CellValue?> _row(int i) => [
       i % 3 == 0 ? null : TextCellValue('x'),
     ];
 
+/// The names of the entries whose local header carries a zip64 extra field.
+List<String> _zip64LocalEntries(Uint8List bytes) {
+  final data = ByteData.sublistView(bytes);
+  final names = <String>[];
+  for (final file in ZipDecoder().decodeBytes(bytes).files) {
+    final at = (file.rawContent as ZipFile).header!.localHeaderOffset;
+    final nameLength = data.getUint16(at + 26, Endian.little);
+    final extraLength = data.getUint16(at + 28, Endian.little);
+    var extraAt = at + 30 + nameLength;
+    final end = extraAt + extraLength;
+    while (extraAt + 4 <= end) {
+      if (data.getUint16(extraAt, Endian.little) == 0x0001) names.add(file.name);
+      extraAt += 4 + data.getUint16(extraAt + 2, Endian.little);
+    }
+  }
+  return names;
+}
+
 void main() {
+  // Excel asks to repair a workbook whose parts announce zip64 when they do
+  // not need it; a sheet Excel can open never passes 4 GiB.
+  test('no part of a streamed workbook is written as zip64', () {
+    final sink = _MemorySink();
+    final zip = ZipStreamWriter(sink);
+    final writer = ExcelStreamWriter.streamed(zip, sheetName: 'Units', flushRows: 100);
+    writer.addHeaderRow(['name', 'n', 'd', 'b', 'x']);
+    for (var i = 0; i < 500; i++) {
+      writer.addRow(_row(i));
+    }
+    writer.addSheet('Sources');
+    writer.addRow(_row(1));
+    writer.finish();
+    zip.finish();
+
+    expect(_zip64LocalEntries(sink.bytes), isEmpty);
+  });
+
   test('a streamed workbook round-trips through ExcelStreamReader', () async {
     final sink = _MemorySink();
     final zip = ZipStreamWriter(sink);

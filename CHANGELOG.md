@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-10-30
+### Fixed
+- Excel asked to repair every workbook written by `ExcelStreamWriter.streamed` or `XlsxCellPatcher` ("We found a problem with some content"): their sheets were opened with `large: true`, and Excel refuses a part whose local header announces zip64 sizes it does not need, even when the central record matches. Sheets are now written without zip64; a sheet past 4 GiB throws a `StateError` (Excel could not open it anyway).
+- `ZipStreamWriter` writes a `large` entry's central record with zip64 sizes too, so it agrees with the entry's local header.
+
 ## [1.4.0] - 2026-10-29
 ### Added
 - `XlsxCellPatcher`: copies a workbook (`writeWorkbook`) or a zip of workbooks (`writePackage`) with a few cells rewritten. Every entry is copied byte for byte (its stored or deflated data, CRC and time) except the XML of a patched sheet; in that sheet only the patched rows are decoded and only the patched cells change, each to an inline string that keeps its `s` style (a missing cell is inserted in column order). Shared strings, styles, `workbook.xml` and the content types are untouched. The sheet streams chunk by chunk, with an optional `pause` between chunks. A cell with a formula is never rewritten (it may be the master of a shared formula, and `calcChain.xml` names it). The patches left out come back as `XlsxMissedPatch` with an `XlsxPatchMissReason` (`noSheet`, `noRow`, `formula`). A `<row>` or `<c>` without `r` is numbered after the one before it.
